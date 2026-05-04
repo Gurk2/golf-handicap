@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/niall/.nvm/versions/**)",
+      "Bash(npm --version)",
+      "Read(//usr/local/bin/**)",
+      "Bash(/usr/local/bin/git --version)",
+      "Bash(git --version)",
+      "Bash(gh auth *)",
+      "Bash(git init *)",
+      "Bash(git add *)",
+      "Bash(git commit *)"
+    ]
+  }
+}
