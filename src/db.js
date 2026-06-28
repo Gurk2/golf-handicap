@@ -2,6 +2,12 @@ import Dexie from "dexie";
 
 export const db = new Dexie("GolfHandicap");
 
+function courseTeeLabel(record) {
+  if (!record) return "";
+  const base = record.course ?? "";
+  return `${base}${record.tee ? ` - ${record.tee}` : ""}${record.holes ? ` - ${record.holes}` : ""}`;
+}
+
 function replaceKnockGreen(record) {
   if (!record?.course || !/\bknock\b/i.test(record.course)) return false;
 
@@ -32,8 +38,7 @@ function hasTeeColor(record) {
 }
 
 function isNineHoleCourse(record) {
-  return Number(record?.rating) < 50 ||
-    /\b9\b|nine/i.test(record?.holes ?? "") ||
+  return /\b9\b|nine/i.test(record?.holes ?? "") ||
     /\b9\s*hole\b|nine\s*hole/i.test(record?.course ?? "");
 }
 
@@ -51,12 +56,6 @@ function shouldRemoveCourse(record) {
   return shouldRemoveUncoloredCourse(record) || isHolywoodRating699(record);
 }
 
-function courseTeeLabel(record) {
-  if (!record) return "";
-  const base = record.course ?? "";
-  return `${base}${record.tee ? ` - ${record.tee}` : ""}${record.holes ? ` - ${record.holes}` : ""}`;
-}
-
 function isAvaCourse(record) {
   return /\bava\b/i.test(courseTeeLabel(record));
 }
@@ -67,9 +66,10 @@ function isAvaNineHoleGreenTee(record) {
 
 function applyAvaNineHoleGreenTee(round, course) {
   const label = courseTeeLabel(course);
-  const roundIsNineHole = isNineHoleCourse(round) || Number(round?.score) < 70;
+  const roundIsNineHole = isNineHoleCourse(round);
   if (!isAvaCourse(round) || !roundIsNineHole || round.course === label) return false;
   round.course = label;
+  round.holes = course.holes;
   round.rating = course.rating;
   round.slope = course.slope;
   if (course.par === undefined) delete round.par;
@@ -155,3 +155,21 @@ db.version(11).stores({
   if (!avaNineHoleGreen) return;
   await tx.table("rounds").toCollection().modify((round) => applyAvaNineHoleGreenTee(round, avaNineHoleGreen));
 });
+
+db.version(12).stores({
+  rounds: "++id, date, course",
+  settings: "key",
+  courses: "++id, course",
+});
+
+db.version(13).stores({
+  rounds: "++id, date, course, source",
+  settings: "key",
+  courses: "++id, course",
+  handicapHistory: "++id, date",
+}).upgrade((tx) =>
+  Promise.all([
+    tx.table("rounds").filter((round) => round.source !== "golfIreland").delete(),
+    tx.table("courses").clear(),
+  ])
+);

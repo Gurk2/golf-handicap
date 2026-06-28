@@ -2,7 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { db } from "./db";
 import { useLiveQuery } from "dexie-react-hooks";
 
-function isNineHole(score) {
+function isNineHoleScore(score) {
   return Number(score) < 70;
 }
 
@@ -12,22 +12,18 @@ function differential(score, rating, slope, pcc = 0, forceNineHole = null) {
   if (isNaN(s) || isNaN(r) || isNaN(sl)) return null;
   // 9-hole differentials are doubled to produce an 18-hole equivalent (WHS)
   const d = ((s - r - p) * 113) / sl;
-  return (forceNineHole ?? isNineHole(s)) ? d * 2 : d;
+  return (forceNineHole ?? isNineHoleScore(s)) ? d * 2 : d;
+}
+
+function scoreDifferentialForRound(round) {
+  const apiDifferential = Number(round?.scoreDifferential);
+  if (!isNaN(apiDifferential)) return apiDifferential;
+  return differential(round?.score, round?.rating, round?.slope, round?.pcc, isNineHoleRound(round));
 }
 
 const r1 = (v) => Math.round(v * 10) / 10;
-
-const officialHandicapHistory = [
-  { date: "2025-06-06", value: 13.6 },
-  { date: "2025-07-25", value: 13.4 },
-  { date: "2025-10-31", value: 12.9 },
-  { date: "2026-04-17", value: 12.9 },
-  { date: "2026-05-01", value: 12.9 },
-  { date: "2026-05-08", value: 12.7 },
-  { date: "2026-05-15", value: 12.9 },
-  { date: "2026-05-25", value: 12.9 },
-  { date: "2026-06-19", value: 13.2 },
-];
+const golfIrelandSettingsKey = "golfIreland";
+const golfIrelandSyncEndpoint = import.meta.env.VITE_GOLF_IRELAND_SYNC_URL ?? "";
 
 function handicap(diffs) {
   const best = [...diffs].sort((a, b) => a - b).slice(0, 8);
@@ -56,6 +52,14 @@ function courseTeeLabel(course) {
   return `${base}${tee ? ` - ${tee}` : ""}${course.holes ? ` - ${course.holes}` : ""}`;
 }
 
+function courseParts(round) {
+  if (!round) return { course: "", tee: "" };
+  if (round.tee) return { course: round.course ?? "", tee: round.tee };
+  const parts = String(round.course ?? "").split(" - ");
+  if (parts.length < 2) return { course: round.course ?? "", tee: "" };
+  return { course: parts[0], tee: parts.slice(1).join(" - ") };
+}
+
 function hasTeeColour(course) {
   return /\b(black|blue|bronze|gold|green|grey|gray|orange|purple|red|silver|white|yellow)\b/i.test(courseTeeLabel(course));
 }
@@ -79,9 +83,12 @@ function coursePresetKey(course) {
 }
 
 function isNineHoleCourse(course) {
-  return Number(course?.rating) < 50 ||
-    /\b9\b|nine/i.test(course?.holes ?? "") ||
+  return /\b9\b|nine/i.test(course?.holes ?? "") ||
     /\b9\s*hole\b|nine\s*hole/i.test(course?.course ?? "");
+}
+
+function isNineHoleRound(round) {
+  return isNineHoleCourse(round) || isNineHoleScore(round?.score);
 }
 
 function coursePar(course) {
@@ -96,20 +103,6 @@ function courseHandicapFor(index, course) {
   if (isNaN(hi) || isNaN(slope)) return null;
   const ratingAdjustment = !isNaN(rating) && par !== null ? rating - par : 0;
   return Math.round((hi * slope) / 113 + ratingAdjustment);
-}
-
-function updateMatchingCourseRecord(record, originalCourse, nextCourse) {
-  if (!originalCourse || coursePresetKey(record) !== coursePresetKey(originalCourse)) return false;
-  record.course = nextCourse.course;
-  record.rating = nextCourse.rating;
-  record.slope = nextCourse.slope;
-  if (nextCourse.par === undefined) delete record.par;
-  else record.par = nextCourse.par;
-  return true;
-}
-
-function clearCourseTags(course) {
-  return { ...course, tee: "", holes: "" };
 }
 
 const neutralButtonStyle = {
@@ -132,10 +125,279 @@ function clamp20(arr) {
   return arr.length <= 20 ? arr : arr.slice(arr.length - 20);
 }
 
+function normalizeDate(value, fallback = todayISO()) {
+  if (!value) return fallback;
+
+  const raw = String(value).replace(/<[^>]*>/g, "").trim();
+  if (!raw) return fallback;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const aspNetDate = raw.match(/\/Date\((-?\d+)(?:[+-]\d+)?\)\//i);
+  if (aspNetDate) {
+    const date = new Date(Number(aspNetDate[1]));
+    return isNaN(date.getTime()) ? fallback : date.toISOString().slice(0, 10);
+  }
+
+  const dayFirstParts = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
+  if (dayFirstParts) {
+    const [, day, month, year] = dayFirstParts;
+    const fullYear = year.length === 2 ? `20${year}` : year;
+    return `${fullYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+
+  const unixTimestamp = raw.match(/^\d{10,13}$/);
+  if (unixTimestamp) {
+    const numeric = Number(raw);
+    const date = new Date(raw.length === 10 ? numeric * 1000 : numeric);
+    return isNaN(date.getTime()) ? fallback : date.toISOString().slice(0, 10);
+  }
+
+  const date = new Date(raw);
+  if (!isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+
+  return fallback;
+}
+
+function valueForKey(record, key) {
+  if (!record || typeof record !== "object") return undefined;
+  if (key.includes(".")) {
+    return key.split(".").reduce((current, part) => valueForKey(current, part), record);
+  }
+  if (record[key] !== undefined) return record[key];
+  const lowerKey = key.toLowerCase();
+  const match = Object.keys(record).find((candidate) => candidate.toLowerCase() === lowerKey);
+  return match ? record[match] : undefined;
+}
+
+function firstValue(record, keys) {
+  for (const key of keys) {
+    const value = valueForKey(record, key);
+    if (value !== undefined && value !== null && value !== "") return value;
+  }
+  return "";
+}
+
+function firstDateValue(record, keys) {
+  const explicit = firstValue(record, keys);
+  if (explicit) return explicit;
+  if (!record || typeof record !== "object") return "";
+  const dateKey = Object.keys(record).find((key) => /date|played/i.test(key) && record[key] !== undefined && record[key] !== null && record[key] !== "");
+  return dateKey ? record[dateKey] : "";
+}
+
+function cleanNumber(value) {
+  if (value === undefined || value === null || value === "") return NaN;
+  if (typeof value === "number") return value;
+  const normalized = String(value).replace(/<[^>]*>/g, "").match(/-?\d+(\.\d+)?/);
+  return normalized ? Number(normalized[0]) : NaN;
+}
+
+function cleanText(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).replace(/<[^>]*>/g, "").trim();
+}
+
+function normalizeGolfIrelandRound(record) {
+  const marker = record?.marker ?? {};
+  const courseInfo = record?.course ?? record?.Course ?? record?.courseInfo ?? record?.CourseInfo ?? {};
+  const teeInfo = record?.tee ?? record?.Tee ?? record?.marker ?? record?.Marker ?? {};
+  const scoreValue = firstValue(record, [
+    "score",
+    "Score",
+    "adjustedGrossScore",
+    "AdjustedGrossScore",
+    "adjustedGross",
+    "AdjustedGross",
+    "grossScore",
+    "GrossScore",
+    "gross",
+    "Gross",
+    "ags",
+    "AGS",
+    "scoreSubmitted",
+    "ScoreSubmitted",
+    "strokes",
+    "Strokes",
+  ]);
+  const numericScore = cleanNumber(scoreValue);
+  const scoreMarker = cleanText(scoreValue);
+  const scoreDifferential = cleanNumber(firstValue(record, [
+    "scoreDifferentialPostPCC",
+    "ScoreDifferentialPostPCC",
+    "scoreDifferentialPrePCC",
+    "ScoreDifferentialPrePCC",
+    "scoreDifferential",
+    "ScoreDifferential",
+    "differential",
+    "Differential",
+    "hcDiff",
+    "HCDiff",
+    "handicapDifferential",
+    "HandicapDifferential",
+    "sd",
+    "SD",
+  ]));
+  const rating = cleanNumber(firstValue(record, [
+    "rating",
+    "Rating",
+    "courseRating",
+    "CourseRating",
+    "course_rating",
+    "cr",
+    "CR",
+    "sss",
+    "SSS",
+    "tee.courseRating",
+    "marker.courseRating",
+    "course.courseRating",
+  ]) || marker.courseRating || teeInfo.courseRating || courseInfo.courseRating);
+  const slope = cleanNumber(firstValue(record, [
+    "slope",
+    "Slope",
+    "slopeRating",
+    "SlopeRating",
+    "slope_rating",
+    "tee.slopeRating",
+    "marker.slope",
+    "marker.slopeRating",
+    "course.slope",
+    "course.slopeRating",
+  ]) || marker.slope || marker.slopeRating || teeInfo.slope || teeInfo.slopeRating || courseInfo.slope || courseInfo.slopeRating);
+  if (isNaN(numericScore) && isNaN(scoreDifferential)) return null;
+  if (isNaN(scoreDifferential) && (isNaN(rating) || isNaN(slope))) return null;
+
+  const holesValue = String(firstValue(record, ["holes", "Holes", "roundHoles", "RoundHoles", "noOfHoles", "NoOfHoles", "numberOfHoles", "NumberOfHoles"])).toLowerCase();
+  const holesPlayed = cleanNumber(firstValue(record, ["holesPlayed", "HolesPlayed", "noOfHoles", "NoOfHoles", "numberOfHoles", "NumberOfHoles"]));
+  const isNineHoleGolfIrelandRound = Boolean(record?.IsNineHole ?? record?.isNineHole ?? marker.isNineHole);
+  const holes = isNineHoleGolfIrelandRound || holesPlayed === 9 || holesValue.includes("9") || (!isNaN(numericScore) && numericScore < 70) ? "9 holes" : "18 holes";
+  const courseName = firstValue(record, [
+    "courseName",
+    "CourseName",
+    "venue",
+    "Venue",
+    "club",
+    "Club",
+    "clubName",
+    "ClubName",
+    "golfClubName",
+    "GolfClubName",
+    "course.name",
+    "Course.Name",
+    "course",
+    "Course",
+  ]) || marker.course || courseInfo.name || courseInfo.courseName || "Golf Ireland score";
+  const markerNameValue = firstValue(record, [
+    "marker",
+    "Marker",
+    "markerName",
+    "MarkerName",
+    "tee",
+    "Tee",
+    "teeName",
+    "TeeName",
+    "teeColour",
+    "TeeColour",
+    "teeColor",
+    "TeeColor",
+  ]) || marker.name || teeInfo.name;
+  const tee = cleanText(markerNameValue);
+  const course = cleanText(courseName) || "Golf Ireland score";
+  const playedAt = firstDateValue(record, [
+    "playedAtLocal",
+    "PlayedAtLocal",
+    "playedAtUTC",
+    "PlayedAtUTC",
+    "playedAt",
+    "PlayedAt",
+    "date",
+    "Date",
+    "dateString",
+    "DateString",
+    "playedOn",
+    "PlayedOn",
+    "playedDate",
+    "PlayedDate",
+    "playedDateString",
+    "PlayedDateString",
+    "datePlayed",
+    "DatePlayed",
+    "datePlayedString",
+    "DatePlayedString",
+    "roundDate",
+    "RoundDate",
+    "roundDateString",
+    "RoundDateString",
+    "scoreDate",
+    "ScoreDate",
+    "scoreDateString",
+    "ScoreDateString",
+    "competitionDate",
+    "CompetitionDate",
+    "competitionDateString",
+    "CompetitionDateString",
+    "SubmittedDate",
+    "submittedDate",
+  ]);
+  const normalizedPlayedAt = normalizeDate(playedAt, "");
+  const displayScore = isNaN(numericScore) ? scoreMarker || (record?.HideAdjustedGrossScores ? "*" : "—") : numericScore;
+  const sourceId = String(firstValue(record, ["scoreUID", "ScoreUID", "id", "Id", "scoreId", "ScoreId", "roundId", "RoundId", "competitionId", "CompetitionId"]) || `${normalizedPlayedAt}-${course}-${displayScore}-${rating}-${slope}`);
+
+  return {
+    date: normalizedPlayedAt,
+    course,
+    tee,
+    holes,
+    score: displayScore,
+    rating: isNaN(rating) ? undefined : rating,
+    slope: isNaN(slope) ? undefined : slope,
+    pcc: cleanNumber(firstValue(record, ["pcc", "Pcc", "PCC", "playingConditionsCalculation", "PlayingConditionsCalculation"])) || 0,
+    courseHandicap: cleanNumber(firstValue(record, ["courseHandicap", "CourseHandicap"])) || undefined,
+    handicapIndex: cleanNumber(firstValue(record, ["handicapIndex", "HandicapIndex"])) || undefined,
+    scoreDifferential: isNaN(scoreDifferential) ? undefined : scoreDifferential,
+    source: "golfIreland",
+    sourceId,
+  };
+}
+
+function syncSampleMessage(rawScores) {
+  const sample = Array.isArray(rawScores) ? rawScores[0] : rawScores;
+  if (!sample || typeof sample !== "object") return "No complete Golf Ireland scores were returned.";
+  return `No complete Golf Ireland scores were returned. First row fields: ${Object.keys(sample).slice(0, 20).join(", ") || "none"}.`;
+}
+
+function extractArrayFromPayload(payload, paths) {
+  for (const path of paths) {
+    const value = path.split(".").reduce((current, part) => current?.[part], payload);
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+function handicapHistoryFromRounds(rounds) {
+  return rounds
+    .map((round) => {
+      const value = Number(round.handicapIndex);
+      if (!round.date || isNaN(value)) return null;
+      return {
+        date: round.date,
+        value: r1(value),
+        source: "golfIreland",
+        displayIndex: round.handicapIndex,
+      };
+    })
+    .filter(Boolean);
+}
+
+function roundImportKey(round) {
+  return round.sourceId
+    ? `${round.source}:${round.sourceId}`
+    : `${round.date}-${round.course}-${round.score}-${round.rating}-${round.slope}`;
+}
+
 function LineChart({ points }) {
   if (points.length < 2) return (
     <div className="flex items-center justify-center h-24 text-sm" style={{ color: "var(--text)" }}>
-      Need 8+ rounds to show progression
+      Need at least two Golf Ireland handicap index points
     </div>
   );
 
@@ -185,7 +447,40 @@ function LineChart({ points }) {
   );
 }
 
-function StatCard({ label, value, sub, accent }) {
+function HelpTip({ text, align = "left" }) {
+  return (
+    <span className="help-tip" style={{ "--tip-left": align === "right" ? "auto" : "0", "--tip-right": align === "right" ? "0" : "auto" }}>
+      <button type="button" aria-label={text} title={text}>?</button>
+      <span role="tooltip">{text}</span>
+    </span>
+  );
+}
+
+function LabelWithHelp({ children, help, align }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      {children}
+      {help && <HelpTip text={help} align={align} />}
+    </span>
+  );
+}
+
+function SectionIntro({ title, children, help }) {
+  return (
+    <div>
+      <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-h)", margin: "0 0 2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+        <LabelWithHelp help={help}>{title}</LabelWithHelp>
+      </h2>
+      {children && (
+        <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>
+          {children}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value, sub, accent, help }) {
   return (
     <div style={{
       background: accent ? "linear-gradient(135deg, #166534 0%, #15803d 100%)" : "var(--card-bg)",
@@ -204,7 +499,7 @@ function StatCard({ label, value, sub, accent }) {
         textTransform: "uppercase",
         color: accent ? "rgba(255,255,255,0.65)" : "var(--text)",
       }}>
-        {label}
+        <LabelWithHelp help={help}>{label}</LabelWithHelp>
       </span>
       <span style={{
         fontSize: 36,
@@ -228,12 +523,17 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-function InputField({ label, wrapperStyle, ...props }) {
+function InputField({ label, help, wrapperStyle, ...props }) {
   return (
     <div className="flex flex-col gap-1" style={wrapperStyle}>
-      {label && <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>{label}</label>}
+      {label && (
+        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>
+          <LabelWithHelp help={help}>{label}</LabelWithHelp>
+        </label>
+      )}
       <input
         {...props}
+        title={props.title ?? help}
         className="rounded-lg px-3 py-2 text-sm w-full outline-none transition-all"
         style={{
           background: "var(--input-bg)",
@@ -248,26 +548,29 @@ function InputField({ label, wrapperStyle, ...props }) {
 }
 
 export default function App() {
-  const [input, setInput] = useState({ date: todayISO(), course: "", score: "", rating: "", slope: "", pcc: 0 });
-  const [editingIndex, setEditingIndex] = useState(null);
-  const [editForm, setEditForm] = useState({});
   const [target, setTarget] = useState(8);
-  const [planner, setPlanner] = useState({ course: "", rating: 71.2, slope: 127, pcc: 0 });
-  const [newCourse, setNewCourse] = useState({ course: "", rating: "", slope: "", par: "" });
-  const [editingCourseId, setEditingCourseId] = useState(null);
-  const [editingCourseKey, setEditingCourseKey] = useState("");
-  const [editingCourseOriginal, setEditingCourseOriginal] = useState(null);
+  const [planner, setPlanner] = useState({ course: "", rating: "", slope: "", pcc: 0 });
   const [courseHandicapCourse, setCourseHandicapCourse] = useState({ course: "", rating: "", slope: 113, pcc: 0 });
   const [showExcludedRounds, setShowExcludedRounds] = useState(false);
+  const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "" });
+  const [syncState, setSyncState] = useState({ status: "idle", message: "" });
 
   const queriedRounds = useLiveQuery(() => db.rounds.orderBy("date").toArray(), []);
-  const queriedCourses = useLiveQuery(() => db.courses.orderBy("course").toArray(), []);
+  const queriedHandicapHistory = useLiveQuery(() => db.handicapHistory.orderBy("date").toArray(), []);
   const rounds = useMemo(() => queriedRounds ?? [], [queriedRounds]);
-  const savedCourses = useMemo(() => queriedCourses ?? [], [queriedCourses]);
+  const syncedHandicapHistory = useMemo(() => queriedHandicapHistory ?? [], [queriedHandicapHistory]);
 
   useEffect(() => {
     db.settings.get("targetHandicap").then((setting) => {
       if (setting && setting.value !== undefined) setTarget(Number(setting.value));
+    });
+    db.settings.get(golfIrelandSettingsKey).then((setting) => {
+      if (setting?.value) {
+        setGolfIrelandSettings({
+          login: setting.value.login ?? "",
+          password: setting.value.password ?? "",
+        });
+      }
     });
   }, []);
 
@@ -276,28 +579,23 @@ export default function App() {
     if (seeded.current || rounds.length === 0) return;
     seeded.current = true;
     const last = rounds[rounds.length - 1];
-    setInput((prev) => ({ ...prev, course: last.course, rating: last.rating, slope: last.slope, pcc: last.pcc ?? 0 }));
-    setPlanner({ course: last.course, rating: last.rating, slope: last.slope, pcc: last.pcc ?? 0 });
+    setPlanner({ course: last.course, holes: last.holes ?? "", par: last.par ?? "", rating: last.rating, slope: last.slope, pcc: last.pcc ?? 0 });
   }, [rounds]);
-
-  // One-time migration from the old localStorage store
-  useEffect(() => {
-    const old = localStorage.getItem("rounds_final");
-    if (!old) return;
-    db.rounds.count().then((n) => {
-      if (n === 0) db.rounds.bulkAdd(JSON.parse(old));
-    });
-    localStorage.removeItem("rounds_final");
-  }, []);
 
   // WHS uses the most recent 20 rounds; pair each with its id so we can mark rows
   const clampedWithDiff = useMemo(() =>
-    clamp20(rounds).map((r) => ({ id: r.id, d: differential(r.score, r.rating, r.slope, r.pcc) })).filter(({ d }) => d !== null),
+    clamp20(rounds).map((r) => ({ id: r.id, d: scoreDifferentialForRound(r) })).filter(({ d }) => d !== null),
     [rounds]
   );
   const diffs = useMemo(() => clampedWithDiff.map(({ d }) => d), [clampedWithDiff]);
 
-  const hcp = diffs.length >= 8 ? handicap(diffs) : null;
+  const apiHandicapIndex = useMemo(() => {
+    const latest = syncedHandicapHistory[syncedHandicapHistory.length - 1];
+    const value = Number(latest?.value);
+    return isNaN(value) ? null : value;
+  }, [syncedHandicapHistory]);
+  const calculatedHcp = diffs.length >= 8 ? handicap(diffs) : null;
+  const hcp = apiHandicapIndex ?? calculatedHcp;
   const cutLine = useMemo(() => {
     if (!hcp) return null;
     const sorted = [...clampedWithDiff].sort((a, b) => a.d - b.d).slice(0, 8);
@@ -310,54 +608,7 @@ export default function App() {
 
   const displayedRounds = [...rounds].reverse();
 
-  const deleteRound = async (index) => {
-    const r = displayedRounds[index];
-    await db.rounds.delete(r.id);
-  };
-
-  const startEdit = (index) => {
-    setEditingIndex(index);
-    setEditForm({ ...displayedRounds[index] });
-  };
-
-  const saveEdit = async () => {
-    const { id, ...fields } = editForm;
-    await db.rounds.update(id, { ...fields, score: +fields.score, rating: +fields.rating, slope: +fields.slope, pcc: +fields.pcc || 0 });
-    setEditingIndex(null);
-  };
-
-  const hcpHist = useMemo(() => {
-    const history = [...officialHandicapHistory];
-    const lastOfficialDate = officialHandicapHistory[officialHandicapHistory.length - 1].date;
-    const baseDiffs = clamp20(rounds
-      .filter((round) => round.date <= lastOfficialDate)
-      .map((round) => differential(round.score, round.rating, round.slope, round.pcc))
-      .filter((d) => d !== null));
-    const futureDiffs = rounds
-      .filter((round) => round.date > lastOfficialDate)
-      .map((round) => ({
-        date: round.date,
-        d: differential(round.score, round.rating, round.slope, round.pcc),
-      }))
-      .filter(({ d }) => d !== null);
-
-    if (futureDiffs.length === 0) return history;
-
-    let rollingDiffs = [...baseDiffs];
-    futureDiffs.forEach(({ date, d }) => {
-      rollingDiffs = clamp20([...rollingDiffs, d]);
-      if (rollingDiffs.length >= 8) history.push({ date, value: handicap(rollingDiffs) });
-    });
-
-    return history;
-  }, [rounds]);
-
-  const add = async () => {
-    if (!input.score || !input.rating || !input.slope) return;
-    const newRound = { date: input.date, course: input.course, score: +input.score, rating: +input.rating, slope: +input.slope, pcc: +input.pcc || 0 };
-    await db.rounds.add(newRound);
-    setInput({ date: todayISO(), course: newRound.course, score: "", rating: newRound.rating, slope: newRound.slope, pcc: newRound.pcc });
-  };
+  const hcpHist = syncedHandicapHistory;
 
   const updateTarget = async (value) => {
     const nextTarget = value === "" ? "" : Number(value);
@@ -371,6 +622,120 @@ export default function App() {
     }
   };
 
+  const saveGolfIrelandSettings = async () => {
+    await db.settings.put({ key: golfIrelandSettingsKey, value: golfIrelandSettings });
+    setSyncState({ status: "saved", message: "Golf Ireland login settings saved locally in this browser." });
+  };
+
+  const syncFromGolfIreland = async () => {
+    const login = golfIrelandSettings.login.trim();
+    const password = golfIrelandSettings.password;
+    if (!login || !password) {
+      setSyncState({ status: "error", message: "Enter your Golf Ireland username and password first." });
+      return;
+    }
+    if (!golfIrelandSyncEndpoint) {
+      setSyncState({
+        status: "error",
+        message: "Set VITE_GOLF_IRELAND_SYNC_URL to your private username/password sync endpoint before syncing.",
+      });
+      return;
+    }
+
+    setSyncState({ status: "syncing", message: "Contacting Golf Ireland sync endpoint..." });
+    try {
+      const response = await fetch(golfIrelandSyncEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          login,
+          password,
+          pageUrl: "https://www.golfireland.ie/my-scores",
+          scoresUrl: "https://www.golfireland.ie/api/Score/GetMyScores",
+        }),
+      });
+
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        throw new Error(`Sync endpoint returned ${response.status}${detail ? `: ${detail}` : ""}`);
+      }
+
+      const payload = await response.json();
+      const rawScores = Array.isArray(payload) ? payload : extractArrayFromPayload(payload, [
+        "scores",
+        "Scores",
+        "rounds",
+        "Rounds",
+        "data",
+        "Data",
+        "aaData",
+        "AaData",
+        "items",
+        "Items",
+        "result",
+        "Result",
+        "handicapRecord.scores",
+        "handicapRecord.Scores",
+        "raw.scores",
+        "raw.Scores",
+        "raw.rounds",
+        "raw.Rounds",
+        "raw.data",
+        "raw.Data",
+        "raw.aaData",
+        "raw.AaData",
+        "raw.items",
+        "raw.Items",
+        "raw.result",
+        "raw.Result",
+      ]);
+      const importedRounds = rawScores.map(normalizeGolfIrelandRound).filter(Boolean);
+      const importedHandicapHistory = (payload.handicapHistory ?? payload.handicapIndexes ?? payload.history ?? [])
+        .map((entry) => {
+          const value = Number(firstValue(entry, ["value", "index", "handicapIndex", "handicap", "hi"]));
+          if (isNaN(value)) return null;
+          return {
+            date: normalizeDate(firstValue(entry, ["date", "effectiveDate", "revisionDate", "updatedOn"])),
+            value: r1(value),
+            source: "golfIreland",
+            displayIndex: entry.displayIndex,
+          };
+        })
+        .filter(Boolean);
+      importedHandicapHistory.push(...handicapHistoryFromRounds(importedRounds));
+
+      const currentHandicap = payload.handicap ?? payload.handicapRecord?.handicap;
+      if (currentHandicap?.index !== undefined && currentHandicap?.index !== null) {
+        importedHandicapHistory.push({
+          date: todayISO(),
+          value: r1(Number(currentHandicap.index)),
+          source: "golfIreland",
+          displayIndex: currentHandicap.displayIndex,
+        });
+      }
+
+      if (importedRounds.length === 0) {
+        setSyncState({ status: "error", message: syncSampleMessage(rawScores) });
+        return;
+      }
+
+      const uniqueRounds = [...new Map(importedRounds.map((round) => [roundImportKey(round), round])).values()];
+      const uniqueHistory = [...new Map(importedHandicapHistory.map((entry) => [entry.date, entry])).values()];
+      await db.transaction("rw", db.rounds, db.courses, db.handicapHistory, async () => {
+        await Promise.all([db.rounds.clear(), db.courses.clear(), db.handicapHistory.clear()]);
+        if (uniqueRounds.length > 0) await db.rounds.bulkAdd(uniqueRounds);
+        if (uniqueHistory.length > 0) await db.handicapHistory.bulkAdd(uniqueHistory);
+      });
+
+      setSyncState({
+        status: "success",
+        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap index point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced.`,
+      });
+    } catch (error) {
+      setSyncState({ status: "error", message: error instanceof Error ? error.message : "Golf Ireland sync failed." });
+    }
+  };
+
   const reqDiff = target !== "" && !isNaN(Number(target)) ? Number(target) : null;
 
   const coursePresets = useMemo(() => {
@@ -378,24 +743,13 @@ export default function App() {
     rounds.forEach((r) => {
       if (!r.course || !r.rating || !r.slope) return;
       if (shouldHideCourse(r)) return;
-      byKey.set(`${r.course}-${r.rating}-${r.slope}`, {
+      byKey.set(coursePresetKey(r), {
         course: r.course,
+        holes: r.holes ?? "",
         rating: r.rating,
         slope: r.slope,
         par: r.par,
         pcc: r.pcc ?? 0,
-      });
-    });
-    savedCourses.forEach((c) => {
-      if (!c.course || !c.rating || !c.slope) return;
-      if (shouldHideCourse(c)) return;
-      byKey.set(`${courseTeeLabel(c)}-${c.rating}-${c.slope}`, {
-        ...c,
-        course: c.course,
-        rating: c.rating,
-        slope: c.slope,
-        par: c.par,
-        pcc: c.pcc ?? 0,
       });
     });
     const presets = [...byKey.values()].reverse();
@@ -414,47 +768,7 @@ export default function App() {
       if (aIsHome !== bIsHome) return aIsHome ? -1 : 1;
       return aLabel.localeCompare(bLabel);
     });
-  }, [rounds, savedCourses]);
-
-  const editCourse = (courseId) => {
-    if (!courseId) {
-      setEditingCourseId(null);
-      setEditingCourseKey("");
-      setEditingCourseOriginal(null);
-      setNewCourse({ course: "", rating: "", slope: "", par: "" });
-      return;
-    }
-    const course = coursePresets.find((preset) => coursePresetKey(preset) === courseId);
-    if (!course) return;
-    setEditingCourseId(course.id ?? null);
-    setEditingCourseKey(coursePresetKey(course));
-    setEditingCourseOriginal({ ...course, par: course.par ?? undefined });
-    setNewCourse({ course: course.course, rating: course.rating, slope: course.slope, par: coursePar(course) ?? "" });
-  };
-
-  const saveCourse = async () => {
-    if (!newCourse.course || !newCourse.rating || !newCourse.slope) return;
-    const course = {
-      course: newCourse.course,
-      rating: +newCourse.rating,
-      slope: +newCourse.slope,
-      par: newCourse.par === "" ? undefined : +newCourse.par,
-    };
-    if (editingCourseKey) {
-      await db.rounds.toCollection().modify((round) => updateMatchingCourseRecord(round, editingCourseOriginal, course));
-    }
-    if (editingCourseId !== null) {
-      await db.courses.update(editingCourseId, course);
-    } else if (!editingCourseKey) {
-      await db.courses.add({ ...course, pcc: 0 });
-    }
-    setInput((prev) => ({ ...prev, course: course.course, rating: course.rating, slope: course.slope, pcc: prev.pcc ?? 0 }));
-    setPlanner((prev) => ({ ...prev, ...course }));
-    setEditingCourseId(null);
-    setEditingCourseKey("");
-    setEditingCourseOriginal(null);
-    setNewCourse({ course: "", rating: "", slope: "", par: "" });
-  };
+  }, [rounds]);
 
   const courseHandicapCourseSeeded = useRef(false);
   useEffect(() => {
@@ -470,10 +784,9 @@ export default function App() {
   const courseHandicap = hcp ? courseHandicapFor(hcp, courseHandicapCourse) : null;
 
   const plannerRows = useMemo(() => {
+    if (!planner.course || !planner.rating || !planner.slope) return [];
     if (reqDiff === null) return [];
-    const plannerIsNineHole = Number(planner.rating) < 50 ||
-      /\b9\b|nine/i.test(planner.holes ?? "") ||
-      /\b9\s*hole\b|nine\s*hole/i.test(planner.course ?? "");
+    const plannerIsNineHole = isNineHoleCourse(planner);
     const targetExact = scoreForDifferential(reqDiff, planner.rating, planner.slope, planner.pcc, plannerIsNineHole);
     if (targetExact === null) return [];
 
@@ -545,17 +858,13 @@ export default function App() {
     }
 
     return rows.sort((a, b) => a.score - b.score);
-  }, [reqDiff, planner.course, planner.holes, planner.rating, planner.slope, planner.pcc, diffs, hcp]);
+  }, [reqDiff, planner, diffs, hcp]);
 
   const courseTeeInputWidth = useMemo(() => {
     const labels = coursePresets.map(courseTeeLabel);
     const longest = Math.max("Course / tee".length, ...labels.map((label) => label.length));
     return `${Math.max(34, longest + 4)}ch`;
   }, [coursePresets]);
-  const courseFieldStyle = useMemo(() => ({
-    minWidth: courseTeeInputWidth,
-    width: `max(100%, ${courseTeeInputWidth})`,
-  }), [courseTeeInputWidth]);
 
   const gapEstimate = () => {
     if (!hcp || reqDiff === null) return null;
@@ -566,6 +875,9 @@ export default function App() {
     }
     return null;
   };
+
+  const roundHeaders = ["Date", "Course", "Tee", "Holes", "Score", "Rating", "Slope", "PCC", "Differential"];
+  const plannerHeaders = ["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after ESR", "Change"];
 
   return (
     <>
@@ -589,6 +901,52 @@ export default function App() {
             --row-bad: rgba(239,68,68,0.1);
             --table-border: rgba(255,255,255,0.07);
           }
+        }
+        .help-tip {
+          display: inline-flex;
+          position: relative;
+          vertical-align: middle;
+          z-index: 3;
+        }
+        .help-tip > button {
+          width: 18px;
+          height: 18px;
+          border: 1px solid var(--border);
+          border-radius: 999px;
+          background: var(--input-bg);
+          color: var(--text);
+          cursor: help;
+          font-size: 11px;
+          font-weight: 800;
+          line-height: 1;
+          padding: 0;
+        }
+        .help-tip > span {
+          position: absolute;
+          top: 24px;
+          left: var(--tip-left);
+          right: var(--tip-right);
+          width: min(280px, 72vw);
+          background: var(--text-h);
+          color: var(--card-bg);
+          border-radius: 8px;
+          box-shadow: var(--shadow);
+          font-size: 12px;
+          font-weight: 500;
+          letter-spacing: 0;
+          line-height: 1.35;
+          opacity: 0;
+          padding: 9px 10px;
+          pointer-events: none;
+          text-transform: none;
+          transform: translateY(-3px);
+          transition: opacity 0.15s ease, transform 0.15s ease;
+          white-space: normal;
+        }
+        .help-tip:hover > span,
+        .help-tip:focus-within > span {
+          opacity: 1;
+          transform: translateY(0);
         }
       `}</style>
 
@@ -615,6 +973,26 @@ export default function App() {
         </div>
 
         <div style={{ width: "min(100% - 32px, 1400px)", margin: "0 auto", padding: "28px 0", display: "flex", flexDirection: "column", gap: 24 }}>
+          <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
+            <SectionIntro title="Quick Start" help="Golf Ireland is the source of truth. IndexedDB only caches synced scores and settings in this browser.">
+              Save your Golf Ireland settings, sync your scores, then use the dashboard and planner to inspect the imported history.
+            </SectionIntro>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10, marginTop: 14 }}>
+              {[
+                ["1", "Save settings", "Enter your Golf Ireland username and password."],
+                ["2", "Sync history", "Imported rounds replace the local cache for scores, courses and handicap history."],
+                ["3", "Read the planner", "Target rows use synced course data to show useful scores and exceptional score reductions."],
+              ].map(([step, title, copy]) => (
+                <div key={step} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gridTemplateColumns: "28px 1fr", gap: 10, alignItems: "start" }}>
+                  <span style={{ width: 24, height: 24, borderRadius: 999, background: "#dcfce7", color: "#166534", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{step}</span>
+                  <span>
+                    <strong style={{ display: "block", color: "var(--text-h)", fontSize: 13 }}>{title}</strong>
+                    <span style={{ display: "block", color: "var(--text)", fontSize: 12, lineHeight: 1.4 }}>{copy}</span>
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
 
           {/* Stat cards */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
@@ -623,15 +1001,19 @@ export default function App() {
               value={hcp ?? "—"}
               sub={diffs.length < 8 ? `${diffs.length} of 8 rounds entered` : `${diffs.length} rounds`}
               accent
+              help="Calculated from the best 8 score differentials in your most recent 20 rounds once at least 8 rounds exist."
             />
             <StatCard
               label="Cut Line"
               value={cutLine != null ? cutLine.toFixed(1) : "—"}
               sub="Best 8 differential threshold"
+              help="The highest differential currently counting. A new differential below this usually improves the index."
             />
             <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)", borderRadius: 16, padding: "20px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
               <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text)" }}>
-                Course Handicap
+                <LabelWithHelp help="Your playing number for the selected course/tee, using index, slope, rating and par when available.">
+                  Course Handicap
+                </LabelWithHelp>
               </span>
               <span style={{ fontSize: 36, fontWeight: 700, lineHeight: 1.1, color: "var(--text-h)" }}>
                 {courseHandicap ?? "—"}
@@ -643,7 +1025,9 @@ export default function App() {
             </div>
             <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)", borderRadius: 16, padding: "20px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
               <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text)" }}>
-                Target Index
+                <LabelWithHelp help="The handicap index you want to plan towards. This value is saved in this browser.">
+                  Target Index
+                </LabelWithHelp>
               </span>
               <input
                 type="number"
@@ -671,113 +1055,65 @@ export default function App() {
             </div>
           </div>
 
-          {/* Add course */}
+          {/* Golf Ireland sync */}
           <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 16 }}>
-              <div>
-                <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-h)", margin: "0 0 2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  {editingCourseKey ? "Update Course" : "Add Course"}
-                </h2>
-                <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>
-                  Courses appear in the round log and target planner.
-                </p>
-              </div>
-              {coursePresets.length > 0 && (
-                <span style={{ fontSize: 12, color: "var(--text)", whiteSpace: "nowrap", paddingTop: 1 }}>
-                  {coursePresets.length} available
-                </span>
-              )}
+              <SectionIntro title="Sync From Golf Ireland">
+                Pull your Golf Ireland scores into the local cache.
+              </SectionIntro>
+              <span style={{
+                fontSize: 12,
+                color: golfIrelandSyncEndpoint ? "#16a34a" : "var(--text)",
+                whiteSpace: "nowrap",
+                paddingTop: 1,
+                fontWeight: 700,
+              }}>
+                {golfIrelandSyncEndpoint ? "Endpoint configured" : "Endpoint needed"}
+              </span>
             </div>
-            {coursePresets.length > 0 && (
-              <div style={{ maxWidth: 420, marginBottom: 12 }}>
-                <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)", display: "block", marginBottom: 4 }}>Edit course</label>
-                <select
-                  value={editingCourseKey}
-                  onChange={(e) => editCourse(e.target.value)}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "end" }}>
+              <InputField
+                label="Username"
+                placeholder="Golf Ireland username"
+                value={golfIrelandSettings.login}
+                onChange={(e) => setGolfIrelandSettings({ ...golfIrelandSettings, login: e.target.value })}
+              />
+              <InputField
+                label="Password"
+                type="password"
+                placeholder="Golf Ireland password"
+                value={golfIrelandSettings.password}
+                onChange={(e) => setGolfIrelandSettings({ ...golfIrelandSettings, password: e.target.value })}
+              />
+              <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-start", flexWrap: "wrap" }}>
+                <button onClick={saveGolfIrelandSettings} style={{ ...neutralButtonStyle, height: 38, padding: "0 14px", width: "auto", flex: "0 0 auto" }}>
+                  Save Settings
+                </button>
+                <button
+                  onClick={syncFromGolfIreland}
+                  disabled={syncState.status === "syncing"}
                   style={{
-                    width: "100%",
-                    background: "var(--input-bg)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 8,
-                    padding: "7px 10px",
-                    color: "var(--text-h)",
-                    fontSize: 13,
-                    outline: "none",
+                    ...btnStyle(syncState.status === "syncing" ? "#e2e8f0" : "#eff6ff", syncState.status === "syncing" ? "#64748b" : "#1d4ed8"),
+                    height: 38,
+                    padding: "0 14px",
+                    width: "auto",
+                    flex: "0 0 auto",
+                    cursor: syncState.status === "syncing" ? "wait" : "pointer",
                   }}
                 >
-                  <option value="">New course</option>
-                  {coursePresets.map((course) => (
-                    <option key={coursePresetKey(course)} value={coursePresetKey(course)}>
-                      {courseTeeLabel(course)} ({course.rating}/{course.slope})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 2fr) repeat(3, minmax(90px, 1fr)) auto", gap: 10, alignItems: "end" }}>
-              <InputField label="Name" placeholder="Course / tee name" value={newCourse.course} onChange={(e) => setNewCourse({ ...newCourse, course: e.target.value })} />
-              <InputField label="Rating" type="number" step="0.1" placeholder="71.2" value={newCourse.rating} onChange={(e) => setNewCourse({ ...newCourse, rating: e.target.value })} />
-              <InputField label="Slope" type="number" placeholder="127" value={newCourse.slope} onChange={(e) => setNewCourse({ ...newCourse, slope: e.target.value })} />
-              <InputField label="Par" type="number" placeholder="70" value={newCourse.par} onChange={(e) => setNewCourse({ ...newCourse, par: e.target.value })} />
-              <button onClick={saveCourse} style={{ ...btnStyle("#f0fdf4", "#16a34a"), height: 38, padding: "0 14px" }}>
-                {editingCourseKey ? "Update Course" : "Save Course"}
-              </button>
-            </div>
-            {editingCourseKey && (
-              <button onClick={() => editCourse("")} style={{ ...btnStyle("#f1f5f9", "var(--text-h)"), marginTop: 10 }}>
-                Cancel Edit
-              </button>
-            )}
-          </div>
-
-          {/* Add round */}
-          <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 16 }}>
-              <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-h)", margin: 0, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                Log a Round
-              </h2>
-              <div style={{ width: 220 }}>
-                <CoursePresetSelect
-                  presets={coursePresets}
-                  selectedCourse={input}
-                  placeholder="Use saved course"
-                  onSelect={(preset) => setInput({ ...input, course: courseTeeLabel(preset), rating: preset.rating, slope: preset.slope, pcc: preset.pcc ?? 0 })}
-                />
+                  {syncState.status === "syncing" ? "Syncing..." : "Sync Scores"}
+                </button>
               </div>
             </div>
-            <div style={{ overflowX: "auto", paddingBottom: 2, marginBottom: 10 }}>
-              <InputField
-                label="Course"
-                placeholder="Course name"
-                value={input.course}
-                wrapperStyle={courseFieldStyle}
-                onChange={(e) => setInput({ ...input, course: e.target.value })}
-              />
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10 }}>
-              <InputField label="Date" type="date" value={input.date} onChange={(e) => setInput({ ...input, date: e.target.value })} />
-              <InputField label="Score" type="number" placeholder="e.g. 82" value={input.score} onChange={(e) => setInput({ ...input, score: e.target.value })} />
-              <InputField label="Rating" type="number" placeholder="e.g. 71.2" value={input.rating} onChange={(e) => setInput({ ...input, rating: e.target.value })} />
-              <InputField label="Slope" type="number" placeholder="e.g. 127" value={input.slope} onChange={(e) => setInput({ ...input, slope: e.target.value })} />
-              <InputField label="PCC" type="number" placeholder="0" value={input.pcc} onChange={(e) => setInput({ ...input, pcc: e.target.value })} />
-            </div>
-            <button
-              onClick={add}
-              style={{
-                marginTop: 14,
-                padding: "9px 22px",
-                borderRadius: 8,
-                background: "linear-gradient(135deg, #15803d, #16a34a)",
-                color: "#fff",
-                fontWeight: 600,
-                fontSize: 14,
-                border: "none",
-                cursor: "pointer",
-                boxShadow: "0 2px 8px rgba(21,128,61,0.35)",
-              }}
-            >
-              + Add Round
-            </button>
+            {syncState.message && (
+              <p style={{
+                fontSize: 12,
+                color: syncState.status === "error" ? "#dc2626" : syncState.status === "success" || syncState.status === "saved" ? "#16a34a" : "var(--text)",
+                marginTop: 10,
+              }}>
+                {syncState.message}
+              </p>
+            )}
           </div>
 
           {/* Rounds table */}
@@ -793,16 +1129,17 @@ export default function App() {
                   <colgroup>
                     <col style={{ width: 120 }} />
                     <col style={{ width: courseTeeInputWidth }} />
+                    <col style={{ width: 110 }} />
+                    <col style={{ width: 95 }} />
                     <col style={{ width: 80 }} />
                     <col style={{ width: 90 }} />
                     <col style={{ width: 80 }} />
                     <col style={{ width: 70 }} />
                     <col style={{ width: 210 }} />
-                    <col style={{ width: 150 }} />
                   </colgroup>
                   <thead>
                     <tr style={{ background: "rgba(0,0,0,0.03)" }}>
-                      {["Date", "Course", "Score", "Rating", "Slope", "PCC", "Differential", "Actions"].map((h) => (
+                      {roundHeaders.map((h) => (
                         <th key={h} style={{
                           padding: "10px 16px",
                           textAlign: "left",
@@ -821,52 +1158,46 @@ export default function App() {
                   </thead>
                   <tbody>
                     {displayedRounds.map((r, index) => {
-                      const d = differential(r.score, r.rating, r.slope, r.pcc);
+                      const d = scoreDifferentialForRound(r);
                       const isCounting = countingIds.has(r.id);
                       const isNewest = index === 0;
-                      const isEditing = editingIndex === index;
                       const isExcluded = index >= 20;
+                      const displayCourse = courseParts(r);
                       if (isExcluded && !showExcludedRounds) return null;
 
                       return (
                         <Fragment key={r.id}>
                           {index === 20 && (
                             <tr>
-                              <td colSpan={8} style={{ padding: "9px 16px", background: "rgba(100,116,139,0.12)", color: "var(--text)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", borderBottom: "1px solid var(--table-border)" }}>
+                              <td colSpan={9} style={{ padding: "9px 16px", background: "rgba(100,116,139,0.12)", color: "var(--text)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", borderBottom: "1px solid var(--table-border)" }}>
                                 Excluded from handicap calculation - older than most recent 20 rounds
                               </td>
                             </tr>
                           )}
                         <tr key={r.id} style={{ background: isCounting && !isExcluded ? "var(--row-good)" : "transparent", borderBottom: "1px solid var(--table-border)", opacity: isExcluded ? 0.58 : 1 }}>
                           <td style={{ padding: "10px 16px", color: "var(--text-h)", whiteSpace: "nowrap" }}>
-                            {isEditing
-                              ? <input type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", color: "var(--text-h)", fontSize: 13, width: 130 }} />
-                              : r.date || "—"}
+                            {r.date || "—"}
                           </td>
                           <td style={{ padding: "10px 16px", color: "var(--text-h)", fontWeight: 500, whiteSpace: "nowrap" }}>
-                            {isEditing
-                              ? <input value={editForm.course} onChange={(e) => setEditForm({ ...editForm, course: e.target.value })} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", color: "var(--text-h)", fontSize: 13, width: courseTeeInputWidth }} />
-                              : r.course || "—"}
+                            {displayCourse.course || "—"}
                           </td>
                           <td style={{ padding: "10px 16px", color: "var(--text-h)", whiteSpace: "nowrap" }}>
-                            {isEditing
-                              ? <input type="number" value={editForm.score} onChange={(e) => setEditForm({ ...editForm, score: e.target.value })} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", color: "var(--text-h)", fontSize: 13, width: 70 }} />
-                              : r.score}
+                            {displayCourse.tee || "—"}
                           </td>
                           <td style={{ padding: "10px 16px", color: "var(--text)", whiteSpace: "nowrap" }}>
-                            {isEditing
-                              ? <input type="number" value={editForm.rating} onChange={(e) => setEditForm({ ...editForm, rating: e.target.value })} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", color: "var(--text-h)", fontSize: 13, width: 70 }} />
-                              : r.rating}
+                            {r.holes || "—"}
+                          </td>
+                          <td style={{ padding: "10px 16px", color: "var(--text-h)", whiteSpace: "nowrap" }}>
+                            {r.score}
                           </td>
                           <td style={{ padding: "10px 16px", color: "var(--text)", whiteSpace: "nowrap" }}>
-                            {isEditing
-                              ? <input type="number" value={editForm.slope} onChange={(e) => setEditForm({ ...editForm, slope: e.target.value })} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", color: "var(--text-h)", fontSize: 13, width: 70 }} />
-                              : r.slope}
+                            {r.rating}
                           </td>
                           <td style={{ padding: "10px 16px", color: "var(--text)", whiteSpace: "nowrap" }}>
-                            {isEditing
-                              ? <input type="number" value={editForm.pcc} onChange={(e) => setEditForm({ ...editForm, pcc: e.target.value })} style={{ background: "var(--input-bg)", border: "1px solid var(--border)", borderRadius: 6, padding: "4px 8px", color: "var(--text-h)", fontSize: 13, width: 60 }} />
-                              : (r.pcc || 0)}
+                            {r.slope}
+                          </td>
+                          <td style={{ padding: "10px 16px", color: "var(--text)", whiteSpace: "nowrap" }}>
+                            {r.pcc || 0}
                           </td>
                           <td style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -876,7 +1207,7 @@ export default function App() {
                               }}>
                                 {d !== null ? d.toFixed(1) : "—"}
                               </span>
-                              {isNineHole(r.score) && (
+                              {isNineHoleRound(r) && (
                                 <span style={{ fontSize: 10, fontWeight: 700, background: "#7c3aed", color: "#fff", borderRadius: 999, padding: "2px 7px", letterSpacing: "0.05em" }}>9H</span>
                               )}
                               {isCounting && (
@@ -890,27 +1221,13 @@ export default function App() {
                               )}
                             </div>
                           </td>
-                          <td style={{ padding: "10px 16px", whiteSpace: "nowrap" }}>
-                            {!isEditing && (
-                              <>
-                                <button onClick={() => startEdit(index)} style={neutralButtonStyle}>Edit</button>
-                                <button onClick={() => deleteRound(index)} style={{ ...btnStyle("#fef2f2", "#dc2626"), marginLeft: 6 }}>Delete</button>
-                              </>
-                            )}
-                            {isEditing && (
-                              <>
-                                <button onClick={saveEdit} style={btnStyle("#f0fdf4", "#16a34a")}>Save</button>
-                                <button onClick={() => setEditingIndex(null)} style={{ ...neutralButtonStyle, marginLeft: 6 }}>Cancel</button>
-                              </>
-                            )}
-                          </td>
                         </tr>
                         </Fragment>
                       );
                     })}
                     {displayedRounds.length > 20 && !showExcludedRounds && (
                       <tr>
-                        <td colSpan={8} style={{ padding: "10px 16px", background: "rgba(100,116,139,0.08)", borderTop: "1px solid var(--table-border)" }}>
+                        <td colSpan={9} style={{ padding: "10px 16px", background: "rgba(100,116,139,0.08)", borderTop: "1px solid var(--table-border)" }}>
                           <button
                             onClick={() => setShowExcludedRounds(true)}
                             style={{ ...neutralButtonStyle, display: "inline-flex", alignItems: "center", gap: 7 }}
@@ -924,7 +1241,7 @@ export default function App() {
                     )}
                     {displayedRounds.length > 20 && showExcludedRounds && (
                       <tr>
-                        <td colSpan={8} style={{ padding: "10px 16px", background: "rgba(100,116,139,0.08)", borderTop: "1px solid var(--table-border)" }}>
+                        <td colSpan={9} style={{ padding: "10px 16px", background: "rgba(100,116,139,0.08)", borderTop: "1px solid var(--table-border)" }}>
                           <button
                             onClick={() => setShowExcludedRounds(false)}
                             style={{ ...neutralButtonStyle, display: "inline-flex", alignItems: "center", gap: 7 }}
@@ -941,19 +1258,21 @@ export default function App() {
               </div>
             </div>
           )}
+          {rounds.length === 0 && (
+            <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
+              <SectionIntro title="No Synced Rounds Yet">
+                Configure Golf Ireland sync above, then import your score history.
+              </SectionIntro>
+            </div>
+          )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, alignItems: "start" }}>
             {/* Target round planner */}
             <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 16 }}>
-                <div>
-                  <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-h)", margin: "0 0 2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                    Target Round Planner
-                  </h2>
-                  <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>
-                    Scores needed to post useful differentials at a course/tee.
-                  </p>
-                </div>
+                <SectionIntro title="Target Round Planner">
+                  Scores needed to post useful differentials at a course/tee.
+                </SectionIntro>
                 <div style={{ width: 220 }}>
                   <CoursePresetSelect presets={coursePresets} selectedCourse={planner} placeholder="Choose course" onSelect={(preset) => setPlanner(preset)} />
                 </div>
@@ -968,26 +1287,17 @@ export default function App() {
                   onChange={(e) => updateTarget(e.target.value)}
                 />
               </div>
-              <div style={{ overflowX: "auto", paddingBottom: 2, marginBottom: 10 }}>
-                <InputField
-                  label="Course / tee"
-                  placeholder="e.g. Home Club - White"
-                  value={courseTeeLabel(planner)}
-                  wrapperStyle={courseFieldStyle}
-                  onChange={(e) => setPlanner(clearCourseTags({ ...planner, course: e.target.value }))}
-                />
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 16 }}>
-                <InputField label="Rating" type="number" step="0.1" value={planner.rating} onChange={(e) => setPlanner({ ...planner, rating: e.target.value })} />
-                <InputField label="Slope" type="number" value={planner.slope} onChange={(e) => setPlanner({ ...planner, slope: e.target.value })} />
-                <InputField label="PCC" type="number" value={planner.pcc} onChange={(e) => setPlanner({ ...planner, pcc: e.target.value })} />
-              </div>
+              <p style={{ fontSize: 12, color: "var(--text)", margin: "0 0 16px" }}>
+                {courseTeeLabel(planner)
+                  ? `${courseTeeLabel(planner)} / rating ${planner.rating} / slope ${planner.slope} / PCC ${planner.pcc ?? 0}`
+                  : "Sync from Golf Ireland to populate course options."}
+              </p>
 
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                   <thead>
                     <tr style={{ background: "rgba(0,0,0,0.03)" }}>
-                      {["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after ESR", "Change"].map((h) => (
+                      {plannerHeaders.map((h) => (
                         <th key={h} style={{ padding: "10px 14px", textAlign: "left", fontWeight: 600, color: "var(--text)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.07em", borderBottom: "1px solid var(--table-border)", whiteSpace: "nowrap" }}>
                           {h}
                         </th>
@@ -1046,12 +1356,9 @@ export default function App() {
           {/* Progression chart */}
           <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
             <div style={{ marginBottom: 12 }}>
-              <div>
-                <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-h)", margin: "0 0 2px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  Handicap Progression
-                </h2>
-                <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>Official index since joining Knock on 06 Jun 2025</p>
-              </div>
+              <SectionIntro title="Handicap Progression">
+                Official Golf Ireland handicap index history
+              </SectionIntro>
             </div>
             <LineChart points={hcpHist} />
             {hcpHist.length >= 2 && (
@@ -1081,6 +1388,8 @@ function CoursePresetSelect({ presets, selectedCourse, placeholder = "Choose cou
   return (
     <select
       value={selectedIndex >= 0 ? String(selectedIndex) : ""}
+      title={placeholder}
+      aria-label={placeholder}
       onChange={(e) => {
         const preset = presets[Number(e.target.value)];
         if (preset) onSelect(preset);
