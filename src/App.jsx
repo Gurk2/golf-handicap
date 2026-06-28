@@ -442,12 +442,18 @@ function LineChart({ points }) {
   const padRight = 26;
   const padTop = 34;
   const padBottom = 58;
-  const shouldLabelPoint = (i) => i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 5) === 0;
-  const shouldLabelDate = (i) => i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 4) === 0;
+  const evenIndexes = (count, maxLabels) => {
+    if (count <= maxLabels) return Array.from({ length: count }, (_, i) => i);
+    return [...new Set(Array.from({ length: maxLabels }, (_, i) => Math.round((i * (count - 1)) / (maxLabels - 1))))];
+  };
+  const pointLabelIndexes = evenIndexes(points.length, 5);
+  const dateLabelIndexes = evenIndexes(points.length, 5);
+  const shouldLabelPoint = (i) => pointLabelIndexes.includes(i);
+  const shouldLabelDate = (i) => dateLabelIndexes.includes(i);
   const ticks = [chartMin, chartMin + range / 2, chartMax].map(r1);
 
   const pts = values.map((v, i) => {
-    const x = padX + (i / (values.length - 1)) * (width - padX - padRight);
+    const x = padX + (i / Math.max(values.length - 1, 1)) * (width - padX - padRight);
     const y = padTop + (1 - (v - chartMin) / range) * (height - padTop - padBottom);
     return [x, y];
   });
@@ -1048,16 +1054,6 @@ export default function App() {
     return `${Math.max(34, longest + 4)}ch`;
   }, [coursePresets]);
 
-  const gapEstimate = () => {
-    if (!hcp || reqDiff === null) return null;
-    let arr = [...diffs];
-    for (let i = 0; i < 20; i++) {
-      arr = [...arr.slice(1), reqDiff];
-      if (handicap(arr) <= reqDiff) return i + 1;
-    }
-    return null;
-  };
-
   const roundHeaders = ["Date", "Course", "Tee", "Holes", "Score", "Rating", "Slope", "PCC", "Differential"];
   const plannerHeaders = ["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after round", "Change"];
 
@@ -1231,9 +1227,6 @@ export default function App() {
                 onFocus={(e) => { e.target.style.borderColor = "#22c55e"; e.target.style.boxShadow = "0 0 0 3px rgba(34,197,94,0.15)"; }}
                 onBlur={(e) => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
               />
-              <span style={{ fontSize: 12, color: "var(--text)" }}>
-                {gapEstimate() ? `~${gapEstimate()} rounds to go` : hcp ? "More than 20 rounds away" : "Add rounds first"}
-              </span>
             </div>
           </div>
 
@@ -1672,7 +1665,7 @@ export default function App() {
                         onChange={(e) => loadCourseTees(e.target.value)}
                         style={{
                           ...fieldControlStyle,
-                          width: "100%",
+                          width: "min(100%, 360px)",
                           padding: "0 10px",
                           marginBottom: courseLookup.tees.length ? 8 : 0,
                         }}
@@ -1691,7 +1684,7 @@ export default function App() {
                         onChange={(e) => selectCourseTee(e.target.value)}
                         style={{
                           ...fieldControlStyle,
-                          width: "100%",
+                          width: "min(100%, 520px)",
                           padding: "0 10px",
                         }}
                       >
