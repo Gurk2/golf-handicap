@@ -552,7 +552,9 @@ export default function App() {
   const [planner, setPlanner] = useState({ course: "", rating: "", slope: "", pcc: 0 });
   const [courseHandicapCourse, setCourseHandicapCourse] = useState({ course: "", rating: "", slope: 113, pcc: 0 });
   const [showExcludedRounds, setShowExcludedRounds] = useState(false);
-  const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "" });
+  const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "", displayName: "" });
+  const [hasSavedGolfIrelandCredentials, setHasSavedGolfIrelandCredentials] = useState(false);
+  const [showGolfIrelandCredentials, setShowGolfIrelandCredentials] = useState(true);
   const [syncState, setSyncState] = useState({ status: "idle", message: "" });
 
   const queriedRounds = useLiveQuery(() => db.rounds.orderBy("date").toArray(), []);
@@ -569,7 +571,11 @@ export default function App() {
         setGolfIrelandSettings({
           login: setting.value.login ?? "",
           password: setting.value.password ?? "",
+          displayName: setting.value.displayName ?? "",
         });
+        const hasSavedCredentials = Boolean(setting.value.login && setting.value.password);
+        setHasSavedGolfIrelandCredentials(hasSavedCredentials);
+        setShowGolfIrelandCredentials(!hasSavedCredentials);
       }
     });
   }, []);
@@ -623,7 +629,11 @@ export default function App() {
   };
 
   const saveGolfIrelandSettings = async () => {
-    await db.settings.put({ key: golfIrelandSettingsKey, value: golfIrelandSettings });
+    const nextSettings = { ...golfIrelandSettings, displayName: "" };
+    await db.settings.put({ key: golfIrelandSettingsKey, value: nextSettings });
+    setGolfIrelandSettings(nextSettings);
+    setHasSavedGolfIrelandCredentials(Boolean(golfIrelandSettings.login && golfIrelandSettings.password));
+    setShowGolfIrelandCredentials(false);
     setSyncState({ status: "saved", message: "Golf Ireland login settings saved locally in this browser." });
   };
 
@@ -661,6 +671,11 @@ export default function App() {
       }
 
       const payload = await response.json();
+      const displayName = cleanText(payload.profile?.displayName ?? payload.displayName ?? payload.name);
+      const nextGolfIrelandSettings = {
+        ...golfIrelandSettings,
+        displayName: displayName || golfIrelandSettings.displayName,
+      };
       const rawScores = Array.isArray(payload) ? payload : extractArrayFromPayload(payload, [
         "scores",
         "Scores",
@@ -731,12 +746,30 @@ export default function App() {
         status: "success",
         message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap index point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced.`,
       });
+      setGolfIrelandSettings(nextGolfIrelandSettings);
+      await db.settings.put({ key: golfIrelandSettingsKey, value: nextGolfIrelandSettings });
+      setHasSavedGolfIrelandCredentials(true);
+      setShowGolfIrelandCredentials(false);
     } catch (error) {
       setSyncState({ status: "error", message: error instanceof Error ? error.message : "Golf Ireland sync failed." });
     }
   };
 
   const reqDiff = target !== "" && !isNaN(Number(target)) ? Number(target) : null;
+  const golfIrelandAuthenticated = syncState.status === "success";
+  const golfIrelandCredentialsReady = Boolean(golfIrelandSettings.login && golfIrelandSettings.password);
+  const shouldShowGolfIrelandCredentials = showGolfIrelandCredentials || !hasSavedGolfIrelandCredentials;
+  const golfIrelandStatusLabel = !golfIrelandSyncEndpoint
+    ? "Endpoint needed"
+    : golfIrelandAuthenticated
+      ? "Authenticated"
+      : hasSavedGolfIrelandCredentials
+        ? "Credentials saved"
+        : "Ready";
+  const golfIrelandStatusGood = golfIrelandSyncEndpoint && (golfIrelandAuthenticated || hasSavedGolfIrelandCredentials);
+  const golfIrelandAccountLabel = golfIrelandSettings.displayName || (golfIrelandSettings.login
+    ? `${golfIrelandSettings.login.slice(0, 3)}${golfIrelandSettings.login.length > 3 ? "..." : ""}`
+    : "Not set");
 
   const coursePresets = useMemo(() => {
     const byKey = new Map();
@@ -1056,63 +1089,169 @@ export default function App() {
           </div>
 
           {/* Golf Ireland sync */}
-          <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 16 }}>
-              <SectionIntro title="Sync From Golf Ireland">
-                Pull your Golf Ireland scores into the local cache.
-              </SectionIntro>
+          <div className="rounded-xl" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)", overflow: "hidden" }}>
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 16,
+              padding: "18px 20px 14px",
+              borderBottom: "1px solid var(--border)",
+            }}>
+              <div>
+                <h2 style={{ fontSize: 15, fontWeight: 800, color: "var(--text-h)", margin: "0 0 3px", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  Sync From Golf Ireland
+                </h2>
+                <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>
+                  Pull scores, tees, differentials and official handicap history.
+                </p>
+              </div>
               <span style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 7,
                 fontSize: 12,
-                color: golfIrelandSyncEndpoint ? "#16a34a" : "var(--text)",
+                color: golfIrelandStatusGood ? "#166534" : golfIrelandSyncEndpoint ? "#1d4ed8" : "#92400e",
+                background: golfIrelandStatusGood ? "#f0fdf4" : golfIrelandSyncEndpoint ? "#eff6ff" : "#fffbeb",
+                border: `1px solid ${golfIrelandStatusGood ? "#bbf7d0" : golfIrelandSyncEndpoint ? "#bfdbfe" : "#fde68a"}`,
+                borderRadius: 999,
                 whiteSpace: "nowrap",
-                paddingTop: 1,
-                fontWeight: 700,
+                padding: "6px 10px",
+                fontWeight: 800,
               }}>
-                {golfIrelandSyncEndpoint ? "Endpoint configured" : "Endpoint needed"}
+                <span aria-hidden="true" style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: 999,
+                  background: golfIrelandStatusGood ? "#16a34a" : golfIrelandSyncEndpoint ? "#2563eb" : "#f59e0b",
+                  display: "inline-block",
+                }} />
+                {golfIrelandStatusLabel}
               </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "end" }}>
-              <InputField
-                label="Username"
-                placeholder="Golf Ireland username"
-                value={golfIrelandSettings.login}
-                onChange={(e) => setGolfIrelandSettings({ ...golfIrelandSettings, login: e.target.value })}
-              />
-              <InputField
-                label="Password"
-                type="password"
-                placeholder="Golf Ireland password"
-                value={golfIrelandSettings.password}
-                onChange={(e) => setGolfIrelandSettings({ ...golfIrelandSettings, password: e.target.value })}
-              />
-              <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-start", flexWrap: "wrap" }}>
-                <button onClick={saveGolfIrelandSettings} style={{ ...neutralButtonStyle, height: 38, padding: "0 14px", width: "auto", flex: "0 0 auto" }}>
-                  Save Settings
-                </button>
-                <button
-                  onClick={syncFromGolfIreland}
-                  disabled={syncState.status === "syncing"}
-                  style={{
-                    ...btnStyle(syncState.status === "syncing" ? "#e2e8f0" : "#eff6ff", syncState.status === "syncing" ? "#64748b" : "#1d4ed8"),
-                    height: 38,
-                    padding: "0 14px",
-                    width: "auto",
-                    flex: "0 0 auto",
-                    cursor: syncState.status === "syncing" ? "wait" : "pointer",
-                  }}
-                >
-                  {syncState.status === "syncing" ? "Syncing..." : "Sync Scores"}
-                </button>
-              </div>
+            <div style={{ padding: 20 }}>
+              {!shouldShowGolfIrelandCredentials && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 14,
+                  flexWrap: "wrap",
+                  background: "rgba(22,101,52,0.04)",
+                  border: "1px solid #dcfce7",
+                  borderRadius: 10,
+                  padding: "12px 14px",
+                }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--text-h)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                      Golf Ireland account
+                    </div>
+                    <div style={{ fontSize: 13, color: "var(--text)", marginTop: 2 }}>
+                      {golfIrelandAuthenticated ? "Authenticated" : "Credentials saved"} as {golfIrelandAccountLabel}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <button
+                      onClick={() => setShowGolfIrelandCredentials(true)}
+                      style={{ ...neutralButtonStyle, height: 36, padding: "0 12px", width: "auto", flex: "0 0 auto", whiteSpace: "nowrap", borderRadius: 8 }}
+                    >
+                      Change Login
+                    </button>
+                    <button
+                      onClick={syncFromGolfIreland}
+                      disabled={syncState.status === "syncing"}
+                      style={{
+                        ...btnStyle(syncState.status === "syncing" ? "#e2e8f0" : "#166534", syncState.status === "syncing" ? "#64748b" : "#fff"),
+                        height: 36,
+                        padding: "0 16px",
+                        width: "auto",
+                        flex: "0 0 auto",
+                        whiteSpace: "nowrap",
+                        borderRadius: 8,
+                        boxShadow: syncState.status === "syncing" ? "none" : "0 2px 8px rgba(22,101,52,0.2)",
+                        cursor: syncState.status === "syncing" ? "wait" : "pointer",
+                      }}
+                    >
+                      {syncState.status === "syncing" ? "Syncing..." : "Sync Scores"}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {shouldShowGolfIrelandCredentials && (
+                <div style={{ display: "flex", gap: 12, alignItems: "end", flexWrap: "wrap" }}>
+                  <InputField
+                    label="Username"
+                    placeholder="Golf Ireland username"
+                    value={golfIrelandSettings.login}
+                    wrapperStyle={{ flex: "1 1 220px", minWidth: 180 }}
+                    onChange={(e) => {
+                      setGolfIrelandSettings({ ...golfIrelandSettings, login: e.target.value });
+                    }}
+                  />
+                  <InputField
+                    label="Password"
+                    type="password"
+                    placeholder="Golf Ireland password"
+                    value={golfIrelandSettings.password}
+                    wrapperStyle={{ flex: "1 1 220px", minWidth: 180 }}
+                    onChange={(e) => {
+                      setGolfIrelandSettings({ ...golfIrelandSettings, password: e.target.value });
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-start", flexWrap: "wrap" }}>
+                    <button onClick={saveGolfIrelandSettings} disabled={!golfIrelandCredentialsReady} style={{
+                      ...neutralButtonStyle,
+                      height: 38,
+                      padding: "0 14px",
+                      width: "auto",
+                      flex: "0 0 auto",
+                      whiteSpace: "nowrap",
+                      borderRadius: 8,
+                      opacity: golfIrelandCredentialsReady ? 1 : 0.55,
+                      cursor: golfIrelandCredentialsReady ? "pointer" : "not-allowed",
+                    }}>
+                      Save Settings
+                    </button>
+                    <button
+                      onClick={syncFromGolfIreland}
+                      disabled={syncState.status === "syncing" || !golfIrelandCredentialsReady}
+                      style={{
+                        ...btnStyle(syncState.status === "syncing" || !golfIrelandCredentialsReady ? "#e2e8f0" : "#166534", syncState.status === "syncing" || !golfIrelandCredentialsReady ? "#64748b" : "#fff"),
+                        height: 38,
+                        padding: "0 16px",
+                        width: "auto",
+                        flex: "0 0 auto",
+                        whiteSpace: "nowrap",
+                        borderRadius: 8,
+                        boxShadow: syncState.status === "syncing" || !golfIrelandCredentialsReady ? "none" : "0 2px 8px rgba(22,101,52,0.2)",
+                        cursor: syncState.status === "syncing" ? "wait" : golfIrelandCredentialsReady ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      {syncState.status === "syncing" ? "Syncing..." : "Sync Scores"}
+                    </button>
+                    {hasSavedGolfIrelandCredentials && (
+                      <button
+                        onClick={() => setShowGolfIrelandCredentials(false)}
+                        style={{ ...neutralButtonStyle, height: 38, padding: "0 12px", width: "auto", flex: "0 0 auto", whiteSpace: "nowrap", borderRadius: 8 }}
+                      >
+                        Cancel
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             {syncState.message && (
-              <p style={{
+              <div style={{
                 fontSize: 12,
-                color: syncState.status === "error" ? "#dc2626" : syncState.status === "success" || syncState.status === "saved" ? "#16a34a" : "var(--text)",
-                marginTop: 10,
+                color: syncState.status === "error" ? "#991b1b" : syncState.status === "success" || syncState.status === "saved" ? "#166534" : "var(--text)",
+                background: syncState.status === "error" ? "#fef2f2" : syncState.status === "success" || syncState.status === "saved" ? "#f0fdf4" : "rgba(100,116,139,0.08)",
+                borderTop: "1px solid var(--border)",
+                padding: "10px 20px",
+                fontWeight: 600,
               }}>
                 {syncState.message}
-              </p>
+              </div>
             )}
           </div>
 

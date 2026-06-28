@@ -182,6 +182,27 @@ async function getScoresFromBrowser(page, scoresUrl) {
   }, scoresUrl);
 }
 
+async function getDisplayName(page) {
+  const selectors = [
+    ".member-profile",
+    "#navbarMemberMenu",
+    ".site-header__action.action--primary",
+    ".mobile-user",
+    ".my-name",
+  ];
+
+  for (const selector of selectors) {
+    const locator = page.locator(selector).first();
+    if (await locator.count()) {
+      const text = (await locator.innerText()).replace(/\s+/g, " ").trim();
+      const cleaned = text.replace(/^Welcome\s+/i, "").trim();
+      if (cleaned && !/logout|my golf login/i.test(cleaned)) return cleaned;
+    }
+  }
+
+  return "";
+}
+
 app.post("/sync-golf-ireland", async (req, res) => {
   const {
     login,
@@ -204,11 +225,15 @@ app.post("/sync-golf-ireland", async (req, res) => {
     await loginIfNeeded(page, login, password);
     await page.goto(pageUrl, { waitUntil: "networkidle" });
 
+    const displayName = await getDisplayName(page);
     const payload = await getScoresFromBrowser(page, scoresUrl);
     const scores = extractScores(payload);
 
     res.json({
       scores,
+      profile: {
+        displayName,
+      },
       raw: payload,
       fetchedAt: new Date().toISOString(),
     });
