@@ -578,11 +578,29 @@ function StatCard({ label, value, sub, accent, help }) {
   );
 }
 
-function InputField({ label, help, wrapperStyle, ...props }) {
+const fieldLabelStyle = {
+  color: "var(--text)",
+  fontSize: 11,
+  fontWeight: 800,
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+};
+
+const fieldControlStyle = {
+  background: "var(--input-bg)",
+  border: "1px solid var(--border)",
+  borderRadius: 8,
+  color: "var(--text-h)",
+  fontSize: 14,
+  height: 40,
+  outline: "none",
+};
+
+function InputField({ label, help, wrapperStyle, style, ...props }) {
   return (
     <div className="flex flex-col gap-1" style={wrapperStyle}>
       {label && (
-        <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>
+        <label style={fieldLabelStyle}>
           <LabelWithHelp help={help}>{label}</LabelWithHelp>
         </label>
       )}
@@ -591,9 +609,9 @@ function InputField({ label, help, wrapperStyle, ...props }) {
         title={props.title ?? help}
         className="rounded-lg px-3 py-2 text-sm w-full outline-none transition-all"
         style={{
-          background: "var(--input-bg)",
-          border: "1px solid var(--border)",
-          color: "var(--text-h)",
+          ...fieldControlStyle,
+          padding: "0 12px",
+          ...style,
         }}
         onFocus={(e) => { e.target.style.borderColor = "#22c55e"; e.target.style.boxShadow = "0 0 0 3px rgba(34,197,94,0.15)"; }}
         onBlur={(e) => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
@@ -1582,50 +1600,64 @@ export default function App() {
 
               {plannerMode === "manual" && (
                 <>
-                <div style={{ display: "grid", gridTemplateColumns: "150px minmax(180px, 1fr) auto", gap: 10, alignItems: "end", marginBottom: 12 }}>
-                  <div className="flex flex-col gap-1">
-                    <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>
-                      Country
-                    </label>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ display: "block", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text)", marginBottom: 6 }}>
+                    Course lookup
+                  </label>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                     <select
+                      aria-label="Course lookup country"
                       value={courseLookup.country}
                       onChange={(e) => setCourseLookup({ ...courseLookup, country: e.target.value, courses: [], selectedCourseId: "", tees: [], message: "" })}
                       style={{
-                        background: "var(--input-bg)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 8,
-                        padding: "7px 10px",
-                        color: "var(--text-h)",
+                        ...fieldControlStyle,
+                        padding: "0 10px",
                         fontSize: 13,
-                        outline: "none",
-                        height: 38,
+                        flex: "0 1 150px",
                       }}
                     >
                       {courseRatingCountries.map(([code, name]) => (
                         <option key={code} value={code}>{name}</option>
                       ))}
                     </select>
+                    <input
+                      aria-label="Course lookup search"
+                      placeholder="Search by course name"
+                      value={courseLookup.query}
+                      onChange={(e) => setCourseLookup({ ...courseLookup, query: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") searchCourseRatings();
+                      }}
+                      style={{
+                        width: "100%",
+                        ...fieldControlStyle,
+                        padding: "0 12px",
+                        flex: "0 1 320px",
+                        maxWidth: 360,
+                      }}
+                      onFocus={(e) => { e.target.style.borderColor = "#22c55e"; e.target.style.boxShadow = "0 0 0 3px rgba(34,197,94,0.15)"; }}
+                      onBlur={(e) => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
+                    />
+                    <button
+                      onClick={searchCourseRatings}
+                      disabled={courseLookup.status === "loading"}
+                      style={{
+                        ...btnStyle(courseLookup.status === "loading" ? "#e2e8f0" : "#166534", courseLookup.status === "loading" ? "#64748b" : "#fff"),
+                        height: 40,
+                        borderRadius: 8,
+                        padding: "0 16px",
+                        whiteSpace: "nowrap",
+                        cursor: courseLookup.status === "loading" ? "wait" : "pointer",
+                        fontWeight: 800,
+                        flex: "0 0 auto",
+                      }}
+                    >
+                      {courseLookup.status === "loading" ? "Searching..." : "Search"}
+                    </button>
                   </div>
-                  <InputField
-                    label="Course lookup"
-                    placeholder="Search course rating database"
-                    value={courseLookup.query}
-                    onChange={(e) => setCourseLookup({ ...courseLookup, query: e.target.value })}
-                  />
-                  <button
-                    onClick={searchCourseRatings}
-                    disabled={courseLookup.status === "loading"}
-                    style={{
-                      ...btnStyle(courseLookup.status === "loading" ? "#e2e8f0" : "#eff6ff", courseLookup.status === "loading" ? "#64748b" : "#1d4ed8"),
-                      height: 38,
-                      borderRadius: 8,
-                      padding: "0 14px",
-                      whiteSpace: "nowrap",
-                      cursor: courseLookup.status === "loading" ? "wait" : "pointer",
-                    }}
-                  >
-                    {courseLookup.status === "loading" ? "Looking..." : "Lookup"}
-                  </button>
+                  <div style={{ fontSize: 12, color: "var(--text)", marginTop: 6 }}>
+                    Find official ratings, slopes and 9-hole setups from the course rating database.
+                  </div>
                 </div>
                 {(courseLookup.courses.length > 0 || courseLookup.tees.length > 0 || courseLookup.message) && (
                   <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 12, background: "rgba(100,116,139,0.06)" }}>
@@ -1639,14 +1671,9 @@ export default function App() {
                         value={courseLookup.selectedCourseId}
                         onChange={(e) => loadCourseTees(e.target.value)}
                         style={{
+                          ...fieldControlStyle,
                           width: "100%",
-                          background: "var(--input-bg)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 8,
-                          padding: "7px 10px",
-                          color: "var(--text-h)",
-                          fontSize: 13,
-                          outline: "none",
+                          padding: "0 10px",
                           marginBottom: courseLookup.tees.length ? 8 : 0,
                         }}
                       >
@@ -1663,14 +1690,9 @@ export default function App() {
                         value=""
                         onChange={(e) => selectCourseTee(e.target.value)}
                         style={{
+                          ...fieldControlStyle,
                           width: "100%",
-                          background: "var(--input-bg)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 8,
-                          padding: "7px 10px",
-                          color: "var(--text-h)",
-                          fontSize: 13,
-                          outline: "none",
+                          padding: "0 10px",
                         }}
                       >
                         <option value="">Choose tee / holes / rating</option>
@@ -1703,7 +1725,7 @@ export default function App() {
                     }}
                   />
                   <div className="flex flex-col gap-1">
-                    <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>
+                    <label style={fieldLabelStyle}>
                       Holes
                     </label>
                     <select
@@ -1713,14 +1735,8 @@ export default function App() {
                         applyManualPlanner(next);
                       }}
                       style={{
-                        background: "var(--input-bg)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 8,
-                        padding: "7px 10px",
-                        color: "var(--text-h)",
-                        fontSize: 13,
-                        outline: "none",
-                        height: 38,
+                        ...fieldControlStyle,
+                        padding: "0 10px",
                       }}
                     >
                       <option value="18 holes">18 holes</option>
