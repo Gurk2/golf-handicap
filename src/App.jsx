@@ -24,6 +24,26 @@ function scoreDifferentialForRound(round) {
 const r1 = (v) => Math.round(v * 10) / 10;
 const golfIrelandSettingsKey = "golfIreland";
 const golfIrelandSyncEndpoint = import.meta.env.VITE_GOLF_IRELAND_SYNC_URL ?? "";
+const courseRatingCountries = [
+  ["NIR", "Northern Ireland"],
+  ["IRL", "Ireland"],
+  ["ENG", "England"],
+  ["SCO", "Scotland"],
+  ["WAL", "Wales"],
+  ["USA", "United States"],
+];
+
+function endpointSibling(path) {
+  if (!golfIrelandSyncEndpoint) return "";
+  try {
+    return new URL(path, golfIrelandSyncEndpoint).toString();
+  } catch {
+    return "";
+  }
+}
+
+const courseRatingSearchEndpoint = endpointSibling("/course-rating/search");
+const courseRatingTeesEndpoint = endpointSibling("/course-rating/tees");
 
 function handicap(diffs) {
   const best = [...diffs].sort((a, b) => a - b).slice(0, 8);
@@ -58,6 +78,15 @@ function courseParts(round) {
   const parts = String(round.course ?? "").split(" - ");
   if (parts.length < 2) return { course: round.course ?? "", tee: "" };
   return { course: parts[0], tee: parts.slice(1).join(" - ") };
+}
+
+function courseSelectLabel(course) {
+  const parts = courseParts(course);
+  return [parts.course, parts.tee, course?.holes].filter(Boolean).join(", ");
+}
+
+function manualCourseLabel(course) {
+  return [course?.course, course?.tee, course?.holes].filter(Boolean).join(" - ");
 }
 
 function hasTeeColour(course) {
@@ -404,16 +433,22 @@ function LineChart({ points }) {
   const values = points.map((point) => point.value);
   const max = Math.max(...values);
   const min = Math.min(...values);
-  const range = max - min || 1;
-  const width = 720;
-  const height = 180;
-  const padX = 40;
-  const padTop = 30;
-  const padBottom = 46;
+  const chartMax = Math.ceil((max + 0.3) * 2) / 2;
+  const chartMin = Math.floor((min - 0.3) * 2) / 2;
+  const range = chartMax - chartMin || 1;
+  const width = 760;
+  const height = 240;
+  const padX = 58;
+  const padRight = 26;
+  const padTop = 34;
+  const padBottom = 58;
+  const shouldLabelPoint = (i) => i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 5) === 0;
+  const shouldLabelDate = (i) => i === 0 || i === points.length - 1 || i % Math.ceil(points.length / 4) === 0;
+  const ticks = [chartMin, chartMin + range / 2, chartMax].map(r1);
 
   const pts = values.map((v, i) => {
-    const x = padX + (i / (values.length - 1)) * (width - padX * 2);
-    const y = padTop + (1 - (v - min) / range) * (height - padTop - padBottom);
+    const x = padX + (i / (values.length - 1)) * (width - padX - padRight);
+    const y = padTop + (1 - (v - chartMin) / range) * (height - padTop - padBottom);
     return [x, y];
   });
 
@@ -422,25 +457,45 @@ function LineChart({ points }) {
   const area = `${pts[0][0]},${baseY} ${polyline} ${pts[pts.length - 1][0]},${baseY}`;
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 168, display: "block" }} role="img" aria-label="Handicap progression chart">
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 220, display: "block" }} role="img" aria-label="Handicap progression chart">
       <defs>
         <linearGradient id="chartGrad" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor="#22c55e" stopOpacity="0.25" />
           <stop offset="100%" stopColor="#22c55e" stopOpacity="0" />
         </linearGradient>
       </defs>
+      {ticks.map((tick) => {
+        const y = padTop + (1 - (tick - chartMin) / range) * (height - padTop - padBottom);
+        return (
+          <g key={tick}>
+            <line x1={padX} y1={y} x2={width - padRight} y2={y} stroke="var(--table-border)" strokeWidth="1" />
+            <text x={padX - 12} y={y + 4} textAnchor="end" style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
+              {tick.toFixed(1)}
+            </text>
+          </g>
+        );
+      })}
       <polygon fill="url(#chartGrad)" points={area} />
-      <line x1={padX} y1={baseY} x2={width - padX} y2={baseY} stroke="var(--table-border)" strokeWidth="1" />
+      <line x1={padX} y1={baseY} x2={width - padRight} y2={baseY} stroke="var(--table-border)" strokeWidth="1" />
       <polyline fill="none" stroke="#22c55e" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={polyline} />
       {pts.map(([x, y], i) => (
         <g key={`${points[i].date}-${i}`}>
           <circle cx={x} cy={y} r="4" fill="#22c55e" stroke="var(--card-bg)" strokeWidth="2" />
-          <text x={x} y={Math.max(14, y - 10)} textAnchor="middle" style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
-            {points[i].value.toFixed(1)}
-          </text>
-          <text x={x} y={height - 18} textAnchor="middle" style={{ fill: "var(--text)", fontSize: 11, fontWeight: 600 }}>
-            {shortDate(points[i].date)}
-          </text>
+          {shouldLabelPoint(i) && (
+            <text x={x} y={Math.max(18, y - 11)} textAnchor="middle" style={{ fill: "var(--text-h)", fontSize: 12, fontWeight: 800 }}>
+              {points[i].value.toFixed(1)}
+            </text>
+          )}
+          {shouldLabelDate(i) && (
+            <text
+              x={x}
+              y={height - 24}
+              textAnchor={i === 0 ? "start" : i === points.length - 1 ? "end" : "middle"}
+              style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}
+            >
+              {shortDate(points[i].date)}
+            </text>
+          )}
         </g>
       ))}
     </svg>
@@ -550,6 +605,9 @@ function InputField({ label, help, wrapperStyle, ...props }) {
 export default function App() {
   const [target, setTarget] = useState(8);
   const [planner, setPlanner] = useState({ course: "", rating: "", slope: "", pcc: 0 });
+  const [plannerMode, setPlannerMode] = useState("synced");
+  const [manualPlanner, setManualPlanner] = useState({ course: "", tee: "", holes: "18 holes", rating: "", slope: "", pcc: 0 });
+  const [courseLookup, setCourseLookup] = useState({ country: "NIR", query: "", status: "idle", message: "", courses: [], selectedCourseId: "", tees: [] });
   const [courseHandicapCourse, setCourseHandicapCourse] = useState({ course: "", rating: "", slope: 113, pcc: 0 });
   const [showExcludedRounds, setShowExcludedRounds] = useState(false);
   const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "", displayName: "" });
@@ -626,6 +684,78 @@ export default function App() {
     if (nextTarget !== "" && !isNaN(nextTarget)) {
       await db.settings.put({ key: "targetHandicap", value: nextTarget });
     }
+  };
+
+  const applyManualPlanner = (next) => {
+    setManualPlanner(next);
+    setPlanner(next);
+  };
+
+  const searchCourseRatings = async () => {
+    const query = courseLookup.query.trim();
+    if (!courseRatingSearchEndpoint) {
+      setCourseLookup((current) => ({ ...current, status: "error", message: "Start the local sync server before looking up course ratings." }));
+      return;
+    }
+    if (query.length < 3) {
+      setCourseLookup((current) => ({ ...current, status: "error", message: "Enter at least 3 characters to search." }));
+      return;
+    }
+
+    setCourseLookup((current) => ({ ...current, status: "loading", message: "Searching course ratings...", courses: [], selectedCourseId: "", tees: [] }));
+    try {
+      const params = new URLSearchParams({ name: query, country: courseLookup.country });
+      const response = await fetch(`${courseRatingSearchEndpoint}?${params}`);
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json();
+      setCourseLookup((current) => ({
+        ...current,
+        status: "success",
+        message: payload.courses?.length ? `${payload.courses.length} course match${payload.courses.length === 1 ? "" : "es"} found.` : "No course matches found.",
+        courses: payload.courses ?? [],
+        selectedCourseId: "",
+        tees: [],
+      }));
+    } catch (error) {
+      setCourseLookup((current) => ({ ...current, status: "error", message: error instanceof Error ? error.message : "Course lookup failed." }));
+    }
+  };
+
+  const loadCourseTees = async (courseId) => {
+    const selectedCourse = courseLookup.courses.find((course) => String(course.courseID) === String(courseId));
+    if (!selectedCourse || !courseRatingTeesEndpoint) return;
+
+    setCourseLookup((current) => ({ ...current, selectedCourseId: courseId, status: "loading", message: "Loading tees...", tees: [] }));
+    try {
+      const response = await fetch(`${courseRatingTeesEndpoint}?${new URLSearchParams({ courseId })}`);
+      if (!response.ok) throw new Error(await response.text());
+      const payload = await response.json();
+      setCourseLookup((current) => ({
+        ...current,
+        status: "success",
+        message: payload.tees?.length ? `Choose one of ${payload.tees.length} tee rating${payload.tees.length === 1 ? "" : "s"}.` : "No tee ratings found for this course.",
+        tees: payload.tees ?? [],
+      }));
+    } catch (error) {
+      setCourseLookup((current) => ({ ...current, status: "error", message: error instanceof Error ? error.message : "Could not load course tees." }));
+    }
+  };
+
+  const selectCourseTee = (teeIndex) => {
+    const selectedCourse = courseLookup.courses.find((course) => String(course.courseID) === String(courseLookup.selectedCourseId));
+    const selectedTee = courseLookup.tees[Number(teeIndex)];
+    if (!selectedCourse || !selectedTee) return;
+
+    applyManualPlanner({
+      ...manualPlanner,
+      course: selectedCourse.facilityName ?? selectedCourse.fullName ?? "",
+      tee: selectedTee.tee,
+      holes: selectedTee.holes,
+      rating: selectedTee.rating,
+      slope: selectedTee.slope,
+      par: selectedTee.par,
+      pcc: manualPlanner.pcc ?? 0,
+    });
   };
 
   const saveGolfIrelandSettings = async () => {
@@ -778,6 +908,7 @@ export default function App() {
       if (shouldHideCourse(r)) return;
       byKey.set(coursePresetKey(r), {
         course: r.course,
+        tee: r.tee ?? "",
         holes: r.holes ?? "",
         rating: r.rating,
         slope: r.slope,
@@ -794,8 +925,8 @@ export default function App() {
     });
 
     return [...uniqueByLabel.values()].sort((a, b) => {
-      const aLabel = courseTeeLabel(a).toLowerCase();
-      const bLabel = courseTeeLabel(b).toLowerCase();
+      const aLabel = courseSelectLabel(a).toLowerCase();
+      const bLabel = courseSelectLabel(b).toLowerCase();
       const aIsHome = aLabel.includes("knock");
       const bIsHome = bLabel.includes("knock");
       if (aIsHome !== bIsHome) return aIsHome ? -1 : 1;
@@ -894,8 +1025,8 @@ export default function App() {
   }, [reqDiff, planner, diffs, hcp]);
 
   const courseTeeInputWidth = useMemo(() => {
-    const labels = coursePresets.map(courseTeeLabel);
-    const longest = Math.max("Course / tee".length, ...labels.map((label) => label.length));
+    const labels = coursePresets.map(courseSelectLabel);
+    const longest = Math.max("Course, tee, holes".length, ...labels.map((label) => label.length));
     return `${Math.max(34, longest + 4)}ch`;
   }, [coursePresets]);
 
@@ -910,7 +1041,7 @@ export default function App() {
   };
 
   const roundHeaders = ["Date", "Course", "Tee", "Holes", "Score", "Rating", "Slope", "PCC", "Differential"];
-  const plannerHeaders = ["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after ESR", "Change"];
+  const plannerHeaders = ["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after round", "Change"];
 
   return (
     <>
@@ -1008,13 +1139,13 @@ export default function App() {
         <div style={{ width: "min(100% - 32px, 1400px)", margin: "0 auto", padding: "28px 0", display: "flex", flexDirection: "column", gap: 24 }}>
           <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
             <SectionIntro title="Quick Start" help="Golf Ireland is the source of truth. IndexedDB only caches synced scores and settings in this browser.">
-              Save your Golf Ireland settings, sync your scores, then use the dashboard and planner to inspect the imported history.
+              Connect Golf Ireland once, sync your scoring record, then use the dashboard to plan the next useful round.
             </SectionIntro>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10, marginTop: 14 }}>
               {[
-                ["1", "Save settings", "Enter your Golf Ireland username and password."],
-                ["2", "Sync history", "Imported rounds replace the local cache for scores, courses and handicap history."],
-                ["3", "Read the planner", "Target rows use synced course data to show useful scores and exceptional score reductions."],
+                ["1", "Authenticate with Golf Ireland", "Sign in once; the panel collapses to your authenticated account."],
+                ["2", "Sync scores and index", "Import rounds, tee data, differentials and official handicap history."],
+                ["3", "Plan the next card", "Use synced course data to spot scores that count, cut, or trigger ESR."],
               ].map(([step, title, copy]) => (
                 <div key={step} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gridTemplateColumns: "28px 1fr", gap: 10, alignItems: "start" }}>
                   <span style={{ width: 24, height: 24, borderRadius: 999, background: "#dcfce7", color: "#166534", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 800 }}>{step}</span>
@@ -1412,10 +1543,226 @@ export default function App() {
                 <SectionIntro title="Target Round Planner">
                   Scores needed to post useful differentials at a course/tee.
                 </SectionIntro>
-                <div style={{ width: 220 }}>
-                  <CoursePresetSelect presets={coursePresets} selectedCourse={planner} placeholder="Choose course" onSelect={(preset) => setPlanner(preset)} />
+                <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, padding: 3, background: "var(--input-bg)" }}>
+                  {[
+                    ["synced", "Synced course"],
+                    ["manual", "New course"],
+                  ].map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      onClick={() => {
+                        setPlannerMode(mode);
+                        if (mode === "manual") setPlanner(manualPlanner);
+                        if (mode === "synced" && coursePresets.length > 0) setPlanner(coursePresets[0]);
+                      }}
+                      style={{
+                        ...btnStyle(plannerMode === mode ? "#166534" : "transparent", plannerMode === mode ? "#fff" : "var(--text-h)"),
+                        height: 30,
+                        borderRadius: 6,
+                        padding: "0 11px",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
                 </div>
               </div>
+
+              {plannerMode === "synced" && (
+                <div style={{ maxWidth: 360, marginBottom: 12 }}>
+                  <CoursePresetSelect
+                    presets={coursePresets}
+                    selectedCourse={planner}
+                    placeholder="Choose synced course"
+                    onSelect={(preset) => setPlanner(preset)}
+                  />
+                </div>
+              )}
+
+              {plannerMode === "manual" && (
+                <>
+                <div style={{ display: "grid", gridTemplateColumns: "150px minmax(180px, 1fr) auto", gap: 10, alignItems: "end", marginBottom: 12 }}>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>
+                      Country
+                    </label>
+                    <select
+                      value={courseLookup.country}
+                      onChange={(e) => setCourseLookup({ ...courseLookup, country: e.target.value, courses: [], selectedCourseId: "", tees: [], message: "" })}
+                      style={{
+                        background: "var(--input-bg)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "7px 10px",
+                        color: "var(--text-h)",
+                        fontSize: 13,
+                        outline: "none",
+                        height: 38,
+                      }}
+                    >
+                      {courseRatingCountries.map(([code, name]) => (
+                        <option key={code} value={code}>{name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <InputField
+                    label="Course lookup"
+                    placeholder="Search course rating database"
+                    value={courseLookup.query}
+                    onChange={(e) => setCourseLookup({ ...courseLookup, query: e.target.value })}
+                  />
+                  <button
+                    onClick={searchCourseRatings}
+                    disabled={courseLookup.status === "loading"}
+                    style={{
+                      ...btnStyle(courseLookup.status === "loading" ? "#e2e8f0" : "#eff6ff", courseLookup.status === "loading" ? "#64748b" : "#1d4ed8"),
+                      height: 38,
+                      borderRadius: 8,
+                      padding: "0 14px",
+                      whiteSpace: "nowrap",
+                      cursor: courseLookup.status === "loading" ? "wait" : "pointer",
+                    }}
+                  >
+                    {courseLookup.status === "loading" ? "Looking..." : "Lookup"}
+                  </button>
+                </div>
+                {(courseLookup.courses.length > 0 || courseLookup.tees.length > 0 || courseLookup.message) && (
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 12, background: "rgba(100,116,139,0.06)" }}>
+                    {courseLookup.message && (
+                      <div style={{ fontSize: 12, color: courseLookup.status === "error" ? "#dc2626" : "var(--text)", marginBottom: courseLookup.courses.length || courseLookup.tees.length ? 8 : 0 }}>
+                        {courseLookup.message}
+                      </div>
+                    )}
+                    {courseLookup.courses.length > 0 && (
+                      <select
+                        value={courseLookup.selectedCourseId}
+                        onChange={(e) => loadCourseTees(e.target.value)}
+                        style={{
+                          width: "100%",
+                          background: "var(--input-bg)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "7px 10px",
+                          color: "var(--text-h)",
+                          fontSize: 13,
+                          outline: "none",
+                          marginBottom: courseLookup.tees.length ? 8 : 0,
+                        }}
+                      >
+                        <option value="">Choose course</option>
+                        {courseLookup.courses.map((course) => (
+                          <option key={course.courseID} value={course.courseID}>
+                            {course.fullName} - {course.city}{course.stateDisplay ? `, ${course.stateDisplay}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    {courseLookup.tees.length > 0 && (
+                      <select
+                        value=""
+                        onChange={(e) => selectCourseTee(e.target.value)}
+                        style={{
+                          width: "100%",
+                          background: "var(--input-bg)",
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
+                          padding: "7px 10px",
+                          color: "var(--text-h)",
+                          fontSize: 13,
+                          outline: "none",
+                        }}
+                      >
+                        <option value="">Choose tee / holes / rating</option>
+                        {courseLookup.tees.map((tee, index) => (
+                          <option key={`${tee.tee}-${tee.gender}-${tee.rating}-${tee.slope}-${index}`} value={index}>
+                            {tee.tee}, {tee.gender}, {tee.holes}, rating {tee.rating}, slope {tee.slope}{tee.par ? `, par ${tee.par}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 12 }}>
+                  <InputField
+                    label="Course"
+                    placeholder="Course name"
+                    value={manualPlanner.course}
+                    onChange={(e) => {
+                      const next = { ...manualPlanner, course: e.target.value };
+                      applyManualPlanner(next);
+                    }}
+                  />
+                  <InputField
+                    label="Tee"
+                    placeholder="e.g. White"
+                    value={manualPlanner.tee}
+                    onChange={(e) => {
+                      const next = { ...manualPlanner, tee: e.target.value };
+                      applyManualPlanner(next);
+                    }}
+                  />
+                  <div className="flex flex-col gap-1">
+                    <label className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--text)" }}>
+                      Holes
+                    </label>
+                    <select
+                      value={manualPlanner.holes}
+                      onChange={(e) => {
+                        const next = { ...manualPlanner, holes: e.target.value };
+                        applyManualPlanner(next);
+                      }}
+                      style={{
+                        background: "var(--input-bg)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "7px 10px",
+                        color: "var(--text-h)",
+                        fontSize: 13,
+                        outline: "none",
+                        height: 38,
+                      }}
+                    >
+                      <option value="18 holes">18 holes</option>
+                      <option value="9 holes">9 holes</option>
+                      <option value="Front 9">Front 9</option>
+                      <option value="Back 9">Back 9</option>
+                    </select>
+                  </div>
+                  <InputField
+                    label="Rating"
+                    type="number"
+                    step="0.1"
+                    placeholder="71.2"
+                    value={manualPlanner.rating}
+                    onChange={(e) => {
+                      const next = { ...manualPlanner, rating: e.target.value };
+                      applyManualPlanner(next);
+                    }}
+                  />
+                  <InputField
+                    label="Slope"
+                    type="number"
+                    placeholder="127"
+                    value={manualPlanner.slope}
+                    onChange={(e) => {
+                      const next = { ...manualPlanner, slope: e.target.value };
+                      applyManualPlanner(next);
+                    }}
+                  />
+                  <InputField
+                    label="PCC"
+                    type="number"
+                    placeholder="0"
+                    value={manualPlanner.pcc}
+                    onChange={(e) => {
+                      const next = { ...manualPlanner, pcc: e.target.value };
+                      applyManualPlanner(next);
+                    }}
+                  />
+                </div>
+                </>
+              )}
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 10 }}>
                 <InputField
@@ -1427,9 +1774,9 @@ export default function App() {
                 />
               </div>
               <p style={{ fontSize: 12, color: "var(--text)", margin: "0 0 16px" }}>
-                {courseTeeLabel(planner)
-                  ? `${courseTeeLabel(planner)} / rating ${planner.rating} / slope ${planner.slope} / PCC ${planner.pcc ?? 0}`
-                  : "Sync from Golf Ireland to populate course options."}
+                {manualCourseLabel(planner)
+                  ? `${manualCourseLabel(planner)} / rating ${planner.rating} / slope ${planner.slope} / PCC ${planner.pcc ?? 0}`
+                  : plannerMode === "manual" ? "Enter course rating and slope to build target scores." : "Sync from Golf Ireland to populate course options."}
               </p>
 
               <div style={{ overflowX: "auto" }}>
@@ -1518,7 +1865,7 @@ function CoursePresetSelect({ presets, selectedCourse, placeholder = "Choose cou
   if (presets.length === 0) return null;
   const selectedIndex = selectedCourse
     ? presets.findIndex((preset) =>
-      (preset.course === selectedCourse.course || courseTeeLabel(preset) === selectedCourse.course) &&
+      (preset.course === selectedCourse.course || courseTeeLabel(preset) === selectedCourse.course || courseSelectLabel(preset) === selectedCourse.course) &&
       Number(preset.rating) === Number(selectedCourse.rating) &&
       Number(preset.slope) === Number(selectedCourse.slope)
     )
@@ -1547,7 +1894,7 @@ function CoursePresetSelect({ presets, selectedCourse, placeholder = "Choose cou
       <option value="">{placeholder}</option>
       {presets.map((preset, index) => (
         <option key={`${preset.course}-${preset.rating}-${preset.slope}-${index}`} value={index}>
-          {courseTeeLabel(preset)} ({preset.rating}/{preset.slope})
+          {courseSelectLabel(preset)} ({preset.rating}/{preset.slope})
         </option>
       ))}
     </select>

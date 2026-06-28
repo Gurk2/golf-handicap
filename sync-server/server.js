@@ -5,6 +5,7 @@ import { chromium } from "playwright";
 const app = express();
 const port = Number(process.env.PORT || 8787);
 const allowedOrigin = process.env.APP_ORIGIN;
+const courseRatingBaseUrl = "https://ncrdb.usga.org";
 
 app.use(cors({
   origin(origin, callback) {
@@ -45,6 +46,90 @@ function extractScores(payload) {
   ];
 
   return candidates.find(Array.isArray) ?? [];
+}
+
+function cookiesFrom(response) {
+  const setCookies = response.headers.getSetCookie?.() ?? response.headers.get("set-cookie")?.split(/, (?=[^;,]+=)/) ?? [];
+  return setCookies.map((cookie) => cookie.split(";")[0]).join("; ");
+}
+
+function stripHtml(value) {
+  return String(value ?? "")
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&#x27;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseNineHoleRating(value, fallbackRating, fallbackSlope) {
+  const [, visibleRating, visibleSlope] = String(value ?? "").match(/([\d.]+)\s*\/\s*([\d.]+)/) ?? [];
+  return {
+    rating: Number(visibleRating ?? fallbackRating),
+    slope: Number(visibleSlope ?? fallbackSlope),
+  };
+}
+
+async function getCourseRatingSession() {
+  const response = await fetch(`${courseRatingBaseUrl}/`);
+  const html = await response.text();
+  const token = html.match(/name="__RequestVerificationToken" type="hidden" value="([^"]+)"/)?.[1];
+  if (!response.ok || !token) throw new Error("Could not start course rating lookup session.");
+  return { token, cookie: cookiesFrom(response) };
+}
+
+function parseCourseTeeRows(html) {
+  const table = html.match(/<table[^>]+id="gvTee"[\s\S]*?<\/table>/i)?.[0] ?? "";
+  const rows = [...table.matchAll(/<tr[^>]*align="center"[^>]*>([\s\S]*?)<\/tr>/gi)];
+
+  return rows.flatMap(([, row]) => {
+    const cells = [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)].map((match) => stripHtml(match[1]));
+    const par = Number(cells[2]);
+    const rating = Number(cells[3]);
+    const slope = Number(cells[5]);
+    const frontNine = parseNineHoleRating(cells[8], cells[6], cells[12]);
+    const backNine = parseNineHoleRating(cells[9], cells[7], cells[13]);
+    if (!cells[0] || isNaN(rating) || isNaN(slope)) return [];
+
+    const fullRound = {
+      tee: cells[0],
+      gender: cells[1],
+      par: isNaN(par) ? undefined : par,
+      rating,
+      slope,
+      holes: !isNaN(par) && par <= 36 ? "9 holes" : "18 holes",
+      frontNine: cells[8] || undefined,
+      backNine: cells[9] || undefined,
+      length: cells[15] || undefined,
+    };
+
+    const nineHoleRounds =
+      !isNaN(par) && par > 36
+        ? [
+            {
+              tee: cells[0],
+              gender: cells[1],
+              rating: frontNine.rating,
+              slope: frontNine.slope,
+              holes: "Front 9",
+              length: undefined,
+            },
+            {
+              tee: cells[0],
+              gender: cells[1],
+              rating: backNine.rating,
+              slope: backNine.slope,
+              holes: "Back 9",
+              length: undefined,
+            },
+          ].filter((tee) => !isNaN(tee.rating) && !isNaN(tee.slope))
+        : [];
+
+    return [fullRound, ...nineHoleRounds];
+  });
 }
 
 async function fillFirst(page, selectors, value) {
@@ -202,6 +287,62 @@ async function getDisplayName(page) {
 
   return "";
 }
+
+app.get("/course-rating/search", async (req, res) => {
+  const name = String(req.query.name ?? "").trim();
+  const country = String(req.query.country ?? "NIR").trim();
+  const city = String(req.query.city ?? "").trim();
+  const state = String(req.query.state ?? "(Select)").trim();
+
+  if (name.length < 3 && city.length < 3) {
+    return res.status(400).json({ error: "Enter at least 3 characters of a course name or city." });
+  }
+
+  try {
+    const { token, cookie } = await getCourseRatingSession();
+    const body = new URLSearchParams({
+      clubName: name,
+      clubCity: city,
+      clubState: state || "(Select)",
+      clubCountry: country || "(Select)",
+    });
+    const response = await fetch(`${courseRatingBaseUrl}/NCRListing?handler=LoadCourses`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Cookie": cookie,
+        "RequestVerificationToken": token,
+      },
+      body,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Course search returned ${response.status}: ${text.slice(0, 500)}`);
+    }
+
+    const courses = await response.json();
+    res.json({ courses: courses.slice(0, 25) });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Course rating search failed." });
+  }
+});
+
+app.get("/course-rating/tees", async (req, res) => {
+  const courseId = String(req.query.courseId ?? "").trim();
+  if (!courseId) return res.status(400).json({ error: "Missing courseId." });
+
+  try {
+    const response = await fetch(`${courseRatingBaseUrl}/courseTeeInfo?CourseID=${encodeURIComponent(courseId)}`);
+    const html = await response.text();
+    if (!response.ok) throw new Error(`Course tee lookup returned ${response.status}.`);
+
+    const tees = parseCourseTeeRows(html);
+    res.json({ tees });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : "Course tee lookup failed." });
+  }
+});
 
 app.post("/sync-golf-ireland", async (req, res) => {
   const {

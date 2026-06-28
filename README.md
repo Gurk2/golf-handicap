@@ -48,11 +48,12 @@ npm run preview
 
 ## How To Use The App
 
-1. Configure the Golf Ireland sync settings in the app.
-2. Sync your Golf Ireland score history.
-3. Review imported rounds and synced handicap history.
-4. Review the official handicap index values imported from Golf Ireland.
-5. Use the target planner with synced course/tee data to see which future scores would count, improve the index, or trigger ESR.
+1. Authenticate with Golf Ireland.
+   Sign in once; the sync panel collapses to your authenticated account.
+2. Sync scores and index.
+   Import rounds, tee data, differentials and official handicap history.
+3. Plan the next card.
+   Use synced course/tee data to see which future scores would count, cut, or trigger ESR.
 
 9-hole handling comes from synced holes/course metadata or a score under `70`. Scores under `70` are assumed to be 9-hole rounds and are doubled to an 18-hole equivalent differential.
 
