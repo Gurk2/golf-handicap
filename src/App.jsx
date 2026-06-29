@@ -626,6 +626,15 @@ function InputField({ label, help, wrapperStyle, style, ...props }) {
   );
 }
 
+function SyncButtonLabel({ syncing }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+      {syncing && <span className="sync-spinner" aria-hidden="true" />}
+      {syncing ? "Syncing..." : "Sync Scores"}
+    </span>
+  );
+}
+
 export default function App() {
   const [target, setTarget] = useState(8);
   const [planner, setPlanner] = useState({ course: "", rating: "", slope: "", pcc: 0 });
@@ -1314,7 +1323,7 @@ export default function App() {
                         cursor: syncState.status === "syncing" ? "wait" : "pointer",
                       }}
                     >
-                      {syncState.status === "syncing" ? "Syncing..." : "Sync Scores"}
+                      <SyncButtonLabel syncing={syncState.status === "syncing"} />
                     </button>
                   </div>
                 </div>
@@ -1369,7 +1378,7 @@ export default function App() {
                         cursor: syncState.status === "syncing" ? "wait" : golfIrelandCredentialsReady ? "pointer" : "not-allowed",
                       }}
                     >
-                      {syncState.status === "syncing" ? "Syncing..." : "Sync Scores"}
+                      <SyncButtonLabel syncing={syncState.status === "syncing"} />
                     </button>
                     {hasSavedGolfIrelandCredentials && (
                       <button

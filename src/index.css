@@ -54,6 +54,23 @@ body {
   margin: 0;
 }
 
+.sync-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  animation: sync-spin 0.7s linear infinite;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 body {
   margin: 0;
   min-height: 100vh;
