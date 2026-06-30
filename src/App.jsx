@@ -417,6 +417,29 @@ function handicapHistoryFromRounds(rounds) {
     .filter(Boolean);
 }
 
+function calculatedHandicapHistoryFromRounds(rounds) {
+  const usableRounds = rounds
+    .filter((round) => round?.date)
+    .sort((a, b) => new Date(a.date) - new Date(b.date));
+
+  return usableRounds
+    .map((round, index) => {
+      const diffs = usableRounds
+        .slice(0, index + 1)
+        .slice(-20)
+        .map(scoreDifferentialForRound)
+        .filter((diff) => diff !== null);
+
+      if (diffs.length < 8) return null;
+      return {
+        date: round.date,
+        value: handicap(diffs),
+        source: "calculated",
+      };
+    })
+    .filter(Boolean);
+}
+
 function roundImportKey(round) {
   return round.sourceId
     ? `${round.source}:${round.sourceId}`
@@ -652,6 +675,7 @@ export default function App() {
   const queriedHandicapHistory = useLiveQuery(() => db.handicapHistory.orderBy("date").toArray(), []);
   const rounds = useMemo(() => queriedRounds ?? [], [queriedRounds]);
   const syncedHandicapHistory = useMemo(() => queriedHandicapHistory ?? [], [queriedHandicapHistory]);
+  const calculatedHandicapHistory = useMemo(() => calculatedHandicapHistoryFromRounds(rounds), [rounds]);
 
   useEffect(() => {
     db.settings.get("targetHandicap").then((setting) => {
@@ -692,7 +716,7 @@ export default function App() {
     return isNaN(value) ? null : value;
   }, [syncedHandicapHistory]);
   const calculatedHcp = diffs.length >= 8 ? handicap(diffs) : null;
-  const hcp = apiHandicapIndex ?? calculatedHcp;
+  const hcp = calculatedHcp ?? apiHandicapIndex;
   const cutLine = useMemo(() => {
     if (!hcp) return null;
     const sorted = [...clampedWithDiff].sort((a, b) => a.d - b.d).slice(0, 8);
@@ -705,7 +729,8 @@ export default function App() {
 
   const displayedRounds = [...rounds].reverse();
 
-  const hcpHist = syncedHandicapHistory;
+  const hcpHist = calculatedHandicapHistory.length > 0 ? calculatedHandicapHistory : syncedHandicapHistory;
+  const hcpSourceLabel = calculatedHandicapHistory.length > 0 ? "calculated from synced rounds" : "official Golf Ireland history";
 
   const updateTarget = async (value) => {
     const nextTarget = value === "" ? "" : Number(value);
@@ -907,7 +932,7 @@ export default function App() {
 
       setSyncState({
         status: "success",
-        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap index point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced.`,
+        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap index fallback point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced and your index is recalculated from synced rounds.`,
       });
       setGolfIrelandSettings(nextGolfIrelandSettings);
       await db.settings.put({ key: golfIrelandSettingsKey, value: nextGolfIrelandSettings });
@@ -1167,7 +1192,7 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10, marginTop: 14 }}>
               {[
                 ["1", "Authenticate with Golf Ireland", "Sign in once; the panel collapses to your authenticated account."],
-                ["2", "Sync scores and index", "Import rounds, tee data, differentials and official handicap history."],
+                ["2", "Sync scores", "Import rounds, tee data and differentials; the app recalculates your index immediately."],
                 ["3", "Plan the next card", "Use synced course data to spot scores that count, cut, or trigger ESR."],
               ].map(([step, title, copy]) => (
                 <div key={step} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gridTemplateColumns: "28px 1fr", gap: 10, alignItems: "start" }}>
@@ -1254,7 +1279,7 @@ export default function App() {
                   Sync From Golf Ireland
                 </h2>
                 <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>
-                  Pull scores, tees, differentials and official handicap history.
+                  Pull scores, tees and differentials, then recalculate your index immediately.
                 </p>
               </div>
               <span style={{
@@ -1861,7 +1886,7 @@ export default function App() {
           <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
             <div style={{ marginBottom: 12 }}>
               <SectionIntro title="Handicap Progression">
-                Official Golf Ireland handicap index history
+                Handicap index {hcpSourceLabel}
               </SectionIntro>
             </div>
             <LineChart points={hcpHist} />
