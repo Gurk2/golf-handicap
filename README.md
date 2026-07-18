@@ -22,10 +22,16 @@ Install dependencies:
 npm install
 ```
 
-Start the local dev server:
+Start the app locally. This runs both the frontend and the Golf Ireland sync server:
 
 ```bash
 npm run dev
+```
+
+Run only the frontend:
+
+```bash
+npm run dev:frontend
 ```
 
 Build for production:
@@ -121,7 +127,7 @@ The app sends:
 
 The included `sync-server` logs in with Playwright, then captures or calls Golf Ireland's POST-only `https://www.golfireland.ie/api/Score/GetMyScores` endpoint using the authenticated browser session.
 
-Run it locally:
+Run the sync server by itself:
 
 ```bash
 cd sync-server

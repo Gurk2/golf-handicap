@@ -417,29 +417,6 @@ function handicapHistoryFromRounds(rounds) {
     .filter(Boolean);
 }
 
-function calculatedHandicapHistoryFromRounds(rounds) {
-  const usableRounds = rounds
-    .filter((round) => round?.date)
-    .sort((a, b) => new Date(a.date) - new Date(b.date));
-
-  return usableRounds
-    .map((round, index) => {
-      const diffs = usableRounds
-        .slice(0, index + 1)
-        .slice(-20)
-        .map(scoreDifferentialForRound)
-        .filter((diff) => diff !== null);
-
-      if (diffs.length < 8) return null;
-      return {
-        date: round.date,
-        value: handicap(diffs),
-        source: "calculated",
-      };
-    })
-    .filter(Boolean);
-}
-
 function roundImportKey(round) {
   return round.sourceId
     ? `${round.source}:${round.sourceId}`
@@ -447,6 +424,8 @@ function roundImportKey(round) {
 }
 
 function LineChart({ points }) {
+  const [hoveredIndex, setHoveredIndex] = useState(null);
+
   if (points.length < 2) return (
     <div className="flex items-center justify-center h-24 text-sm" style={{ color: "var(--text)" }}>
       Need at least two Golf Ireland handicap index points
@@ -484,6 +463,10 @@ function LineChart({ points }) {
   const polyline = pts.map((p) => p.join(",")).join(" ");
   const baseY = height - padBottom;
   const area = `${pts[0][0]},${baseY} ${polyline} ${pts[pts.length - 1][0]},${baseY}`;
+  const hoveredPoint = hoveredIndex !== null ? points[hoveredIndex] : null;
+  const hoveredCoords = hoveredIndex !== null ? pts[hoveredIndex] : null;
+  const tooltipX = hoveredCoords ? Math.min(width - 132, Math.max(64, hoveredCoords[0] - 54)) : 0;
+  const tooltipY = hoveredCoords ? Math.max(12, hoveredCoords[1] - 58) : 0;
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 220, display: "block" }} role="img" aria-label="Handicap progression chart">
@@ -508,8 +491,17 @@ function LineChart({ points }) {
       <line x1={padX} y1={baseY} x2={width - padRight} y2={baseY} stroke="var(--table-border)" strokeWidth="1" />
       <polyline fill="none" stroke="#22c55e" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={polyline} />
       {pts.map(([x, y], i) => (
-        <g key={`${points[i].date}-${i}`}>
-          <circle cx={x} cy={y} r="4" fill="#22c55e" stroke="var(--card-bg)" strokeWidth="2" />
+        <g
+          key={`${points[i].date}-${i}`}
+          onMouseEnter={() => setHoveredIndex(i)}
+          onMouseLeave={() => setHoveredIndex(null)}
+          onFocus={() => setHoveredIndex(i)}
+          onBlur={() => setHoveredIndex(null)}
+          tabIndex={0}
+          style={{ outline: "none", cursor: "default" }}
+        >
+          <circle cx={x} cy={y} r="10" fill="transparent" />
+          <circle cx={x} cy={y} r={hoveredIndex === i ? "6" : "4"} fill="#22c55e" stroke="var(--card-bg)" strokeWidth="2" />
           {shouldLabelPoint(i) && (
             <text x={x} y={Math.max(18, y - 11)} textAnchor="middle" style={{ fill: "var(--text-h)", fontSize: 12, fontWeight: 800 }}>
               {points[i].value.toFixed(1)}
@@ -527,6 +519,18 @@ function LineChart({ points }) {
           )}
         </g>
       ))}
+      {hoveredPoint && hoveredCoords && (
+        <g pointerEvents="none">
+          <line x1={hoveredCoords[0]} y1={tooltipY + 44} x2={hoveredCoords[0]} y2={hoveredCoords[1] - 8} stroke="#166534" strokeWidth="1" strokeDasharray="3 3" opacity="0.55" />
+          <rect x={tooltipX} y={tooltipY} width="116" height="44" rx="7" fill="var(--card-bg)" stroke="#86efac" strokeWidth="1" />
+          <text x={tooltipX + 10} y={tooltipY + 17} style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
+            {shortDate(hoveredPoint.date)}
+          </text>
+          <text x={tooltipX + 10} y={tooltipY + 34} style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
+            Handicap {hoveredPoint.value.toFixed(1)}
+          </text>
+        </g>
+      )}
     </svg>
   );
 }
@@ -670,12 +674,13 @@ export default function App() {
   const [hasSavedGolfIrelandCredentials, setHasSavedGolfIrelandCredentials] = useState(false);
   const [showGolfIrelandCredentials, setShowGolfIrelandCredentials] = useState(true);
   const [syncState, setSyncState] = useState({ status: "idle", message: "" });
+  const [lastRoundScenarioScore, setLastRoundScenarioScore] = useState("");
 
   const queriedRounds = useLiveQuery(() => db.rounds.orderBy("date").toArray(), []);
   const queriedHandicapHistory = useLiveQuery(() => db.handicapHistory.orderBy("date").toArray(), []);
   const rounds = useMemo(() => queriedRounds ?? [], [queriedRounds]);
   const syncedHandicapHistory = useMemo(() => queriedHandicapHistory ?? [], [queriedHandicapHistory]);
-  const calculatedHandicapHistory = useMemo(() => calculatedHandicapHistoryFromRounds(rounds), [rounds]);
+  const latestRound = rounds[rounds.length - 1] ?? null;
 
   useEffect(() => {
     db.settings.get("targetHandicap").then((setting) => {
@@ -699,9 +704,15 @@ export default function App() {
   useEffect(() => {
     if (seeded.current || rounds.length === 0) return;
     seeded.current = true;
-    const last = rounds[rounds.length - 1];
-    setPlanner({ course: last.course, holes: last.holes ?? "", par: last.par ?? "", rating: last.rating, slope: last.slope, pcc: last.pcc ?? 0 });
-  }, [rounds]);
+    setPlanner({ course: latestRound.course, holes: latestRound.holes ?? "", par: latestRound.par ?? "", rating: latestRound.rating, slope: latestRound.slope, pcc: latestRound.pcc ?? 0 });
+  }, [latestRound, rounds.length]);
+
+  const scenarioSeededRoundId = useRef(null);
+  useEffect(() => {
+    if (!latestRound || scenarioSeededRoundId.current === latestRound.id) return;
+    scenarioSeededRoundId.current = latestRound.id;
+    setLastRoundScenarioScore(latestRound.score ?? "");
+  }, [latestRound]);
 
   // WHS uses the most recent 20 rounds; pair each with its id so we can mark rows
   const clampedWithDiff = useMemo(() =>
@@ -717,6 +728,15 @@ export default function App() {
   }, [syncedHandicapHistory]);
   const calculatedHcp = diffs.length >= 8 ? handicap(diffs) : null;
   const hcp = calculatedHcp ?? apiHandicapIndex;
+  const latestCalculatedHandicapPoint = useMemo(() => {
+    if (calculatedHcp === null || rounds.length === 0) return null;
+    const latestRound = rounds[rounds.length - 1];
+    return {
+      date: latestRound.date ?? todayISO(),
+      value: calculatedHcp,
+      source: "calculated",
+    };
+  }, [calculatedHcp, rounds]);
   const cutLine = useMemo(() => {
     if (!hcp) return null;
     const sorted = [...clampedWithDiff].sort((a, b) => a.d - b.d).slice(0, 8);
@@ -728,9 +748,26 @@ export default function App() {
   }, [hcp, clampedWithDiff]);
 
   const displayedRounds = [...rounds].reverse();
+  const nextRoundDrop = useMemo(() => {
+    const recentRounds = clamp20(rounds);
+    if (recentRounds.length < 20) return null;
+    const round = recentRounds[0];
+    const diff = scoreDifferentialForRound(round);
+    return {
+      round,
+      diff,
+      counts: countingIds.has(round.id),
+    };
+  }, [rounds, countingIds]);
 
-  const hcpHist = calculatedHandicapHistory.length > 0 ? calculatedHandicapHistory : syncedHandicapHistory;
-  const hcpSourceLabel = calculatedHandicapHistory.length > 0 ? "calculated from synced rounds" : "official Golf Ireland history";
+  const hcpHist = useMemo(() => {
+    if (!latestCalculatedHandicapPoint) return syncedHandicapHistory;
+    const officialHistory = syncedHandicapHistory.filter((entry) => entry.date !== latestCalculatedHandicapPoint.date);
+    return [...officialHistory, latestCalculatedHandicapPoint].sort((a, b) => new Date(a.date) - new Date(b.date));
+  }, [latestCalculatedHandicapPoint, syncedHandicapHistory]);
+  const hcpSourceLabel = latestCalculatedHandicapPoint
+    ? "from Golf Ireland history, with latest index recalculated"
+    : "from Golf Ireland history";
 
   const updateTarget = async (value) => {
     const nextTarget = value === "" ? "" : Number(value);
@@ -932,7 +969,7 @@ export default function App() {
 
       setSyncState({
         status: "success",
-        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap index fallback point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced and your index is recalculated from synced rounds.`,
+        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap history point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced and only the latest index is recalculated from synced rounds.`,
       });
       setGolfIrelandSettings(nextGolfIrelandSettings);
       await db.settings.put({ key: golfIrelandSettingsKey, value: nextGolfIrelandSettings });
@@ -1004,6 +1041,60 @@ export default function App() {
   }, [coursePresets]);
 
   const courseHandicap = hcp ? courseHandicapFor(hcp, courseHandicapCourse) : null;
+
+  const lastRoundScenario = useMemo(() => {
+    if (!latestRound) return null;
+
+    const alternateScore = Number(lastRoundScenarioScore);
+    const originalDiff = scoreDifferentialForRound(latestRound);
+    const alternateDiff = differential(
+      alternateScore,
+      latestRound.rating,
+      latestRound.slope,
+      latestRound.pcc,
+      isNineHoleRound(latestRound)
+    );
+    const latestRoundInWindow = clampedWithDiff.some(({ id }) => id === latestRound.id);
+
+    if (!latestRoundInWindow || originalDiff === null || alternateDiff === null || diffs.length < 8) {
+      return {
+        canCalculate: false,
+        originalScore: latestRound.score,
+        alternateScore: lastRoundScenarioScore,
+        originalDiff,
+        alternateDiff,
+        message: !latestRoundInWindow
+          ? "The last round is not in the current 20-round handicap window."
+          : diffs.length < 8
+            ? "Need at least 8 complete differentials to calculate this."
+            : "Need a valid score, rating and slope for the last round.",
+      };
+    }
+
+    const scenarioDiffs = clampedWithDiff.map(({ id, d }) => id === latestRound.id ? alternateDiff : d);
+    const projectedHcp = handicap(scenarioDiffs);
+    const change = hcp !== null && projectedHcp !== null ? r1(projectedHcp - hcp) : null;
+    const originalCounts = countingIds.has(latestRound.id);
+    const scenarioCountingIds = new Set(
+      clampedWithDiff
+        .map(({ id, d }) => ({ id, d: id === latestRound.id ? alternateDiff : d }))
+        .sort((a, b) => a.d - b.d)
+        .slice(0, 8)
+        .map(({ id }) => id)
+    );
+
+    return {
+      canCalculate: true,
+      originalScore: latestRound.score,
+      alternateScore: lastRoundScenarioScore,
+      originalDiff,
+      alternateDiff,
+      projectedHcp,
+      change,
+      originalCounts,
+      alternateCounts: scenarioCountingIds.has(latestRound.id),
+    };
+  }, [latestRound, lastRoundScenarioScore, clampedWithDiff, diffs.length, hcp, countingIds]);
 
   const plannerRows = useMemo(() => {
     if (!planner.course || !planner.rating || !planner.slope) return [];
@@ -1089,7 +1180,7 @@ export default function App() {
   }, [coursePresets]);
 
   const roundHeaders = ["Date", "Course", "Tee", "Holes", "Score", "Rating", "Slope", "PCC", "Differential"];
-  const plannerHeaders = ["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after round", "Change"];
+  const plannerHeaders = ["Outcome", "Score", "Actual diff", "Counts", "ESR", "Index after next round", "Change"];
 
   return (
     <>
@@ -1192,7 +1283,7 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10, marginTop: 14 }}>
               {[
                 ["1", "Authenticate with Golf Ireland", "Sign in once; the panel collapses to your authenticated account."],
-                ["2", "Sync scores", "Import rounds, tee data and differentials; the app recalculates your index immediately."],
+                ["2", "Sync scores", "Import rounds, tee data, differentials and official handicap history."],
                 ["3", "Plan the next card", "Use synced course data to spot scores that count, cut, or trigger ESR."],
               ].map(([step, title, copy]) => (
                 <div key={step} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "grid", gridTemplateColumns: "28px 1fr", gap: 10, alignItems: "start" }}>
@@ -1279,7 +1370,7 @@ export default function App() {
                   Sync From Golf Ireland
                 </h2>
                 <p style={{ fontSize: 12, color: "var(--text)", margin: 0 }}>
-                  Pull scores, tees and differentials, then recalculate your index immediately.
+                  Pull scores, tees, differentials and official handicap history, then recalculate the latest index.
                 </p>
               </div>
               <span style={{
@@ -1582,11 +1673,90 @@ export default function App() {
           )}
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 16, alignItems: "start" }}>
-            {/* Target round planner */}
+            {/* Last round scenario */}
+            {latestRound && (
+              <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
+                <div style={{ marginBottom: 16 }}>
+                  <SectionIntro title="Last Round What-If">
+                    Recalculate your current index as though the latest synced score had been different.
+                  </SectionIntro>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
+                  <InputField
+                    label="Actual score"
+                    value={latestRound.score ?? ""}
+                    readOnly
+                  />
+                  <InputField
+                    label="What-if score"
+                    type="number"
+                    value={lastRoundScenarioScore}
+                    onChange={(e) => setLastRoundScenarioScore(e.target.value)}
+                  />
+                  <InputField
+                    label="Rating"
+                    value={latestRound.rating ?? ""}
+                    readOnly
+                  />
+                  <InputField
+                    label="Slope"
+                    value={latestRound.slope ?? ""}
+                    readOnly
+                  />
+                  <InputField
+                    label="PCC"
+                    value={latestRound.pcc ?? 0}
+                    readOnly
+                  />
+                </div>
+                <p style={{ fontSize: 12, color: "var(--text)", margin: "0 0 14px" }}>
+                  {manualCourseLabel(latestRound) || courseTeeLabel(latestRound) || "Latest round"} on {shortDate(latestRound.date)}
+                </p>
+
+                {lastRoundScenario?.canCalculate ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+                    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(100,116,139,0.06)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Current index</div>
+                      <div style={{ fontSize: 28, fontWeight: 800, color: "var(--text-h)", lineHeight: 1.15 }}>{hcp?.toFixed ? hcp.toFixed(1) : hcp}</div>
+                    </div>
+                    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(34,197,94,0.07)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>What-if index</div>
+                      <div style={{ fontSize: 28, fontWeight: 800, color: "var(--text-h)", lineHeight: 1.15 }}>{lastRoundScenario.projectedHcp.toFixed(1)}</div>
+                    </div>
+                    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(59,130,246,0.07)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Change</div>
+                      <div style={{
+                        fontSize: 28,
+                        fontWeight: 800,
+                        color: lastRoundScenario.change < 0 ? "#16a34a" : lastRoundScenario.change > 0 ? "#dc2626" : "var(--text-h)",
+                        lineHeight: 1.15,
+                      }}>
+                        {lastRoundScenario.change !== null ? `${lastRoundScenario.change > 0 ? "+" : ""}${lastRoundScenario.change.toFixed(1)}` : "—"}
+                      </div>
+                    </div>
+                    <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(100,116,139,0.06)" }}>
+                      <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Differential</div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-h)", marginTop: 5 }}>
+                        {lastRoundScenario.originalDiff.toFixed(1)} to {lastRoundScenario.alternateDiff.toFixed(1)}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text)", marginTop: 4 }}>
+                        {lastRoundScenario.alternateCounts ? "Would count" : "Would not count"} in best 8
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(100,116,139,0.06)", color: "var(--text)", fontSize: 13, fontWeight: 600 }}>
+                    {lastRoundScenario?.message ?? "Sync rounds before using the last round what-if."}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Next round planner */}
             <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
               <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 16 }}>
-                <SectionIntro title="Target Round Planner">
-                  Scores needed to post useful differentials at a course/tee.
+                <SectionIntro title="Next Round Planner">
+                  Scores needed on the next card, including the oldest round dropping from your current 20.
                 </SectionIntro>
                 <div style={{ display: "inline-flex", border: "1px solid var(--border)", borderRadius: 8, padding: 3, background: "var(--input-bg)" }}>
                   {[
@@ -1624,6 +1794,54 @@ export default function App() {
                   />
                 </div>
               )}
+
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))",
+                gap: 10,
+                marginBottom: 12,
+              }}>
+                <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(100,116,139,0.06)" }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    Current 20
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: "var(--text-h)", lineHeight: 1.2, marginTop: 3 }}>
+                    {Math.min(rounds.length, 20)} rounds
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text)", marginTop: 3 }}>
+                    Each row below adds one new score.
+                  </div>
+                </div>
+                <div style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: 12,
+                  background: nextRoundDrop?.counts ? "rgba(239,68,68,0.07)" : "rgba(100,116,139,0.06)",
+                }}>
+                  <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    Dropping next
+                  </div>
+                  {nextRoundDrop ? (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-h)", marginTop: 5 }}>
+                        {shortDate(nextRoundDrop.round.date)} / {nextRoundDrop.round.score} / diff {nextRoundDrop.diff !== null ? nextRoundDrop.diff.toFixed(1) : "—"}
+                      </div>
+                      <div style={{ fontSize: 12, color: nextRoundDrop.counts ? "#dc2626" : "var(--text)", fontWeight: nextRoundDrop.counts ? 800 : 600, marginTop: 4 }}>
+                        {nextRoundDrop.counts ? "Currently counting in your best 8" : "Not currently counting"}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text-h)", marginTop: 5 }}>
+                        No score drops yet
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--text)", marginTop: 4 }}>
+                        You need 20 scored rounds before the next one displaces an old card.
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
 
               {plannerMode === "manual" && (
                 <>
@@ -1819,7 +2037,7 @@ export default function App() {
               <p style={{ fontSize: 12, color: "var(--text)", margin: "0 0 16px" }}>
                 {manualCourseLabel(planner)
                   ? `${manualCourseLabel(planner)} / rating ${planner.rating} / slope ${planner.slope} / PCC ${planner.pcc ?? 0}`
-                  : plannerMode === "manual" ? "Enter course rating and slope to build target scores." : "Sync from Golf Ireland to populate course options."}
+                  : plannerMode === "manual" ? "Enter course rating and slope to build next-round scores." : "Sync from Golf Ireland to populate course options."}
               </p>
 
               <div style={{ overflowX: "auto" }}>
