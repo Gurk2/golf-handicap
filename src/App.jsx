@@ -1886,6 +1886,29 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {rounds.length > 0 && (
+            <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
+              <div style={{ marginBottom: 8 }}>
+                <SectionIntro title="Score Differentials">
+                  Bars and dates show your latest 20 rounds. The trend calculation also uses prior, excluded scores.
+                </SectionIntro>
+              </div>
+              <DifferentialBarChart points={differentialHistory} />
+              {differentialHistory.length > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--text)" }}>
+                  <span>Latest: {Number(differentialHistory[differentialHistory.length - 1].value).toFixed(1)}</span>
+                  <span>Best of latest 20: {Math.min(...differentialHistory.slice(-20).map((point) => Number(point.value))).toFixed(1)}</span>
+                </div>
+              )}
+              {differentialTrend && (
+                <div style={{ marginTop: 8, fontSize: 12, fontWeight: 800, color: differentialTrend.color }}>
+                  {differentialTrend.label}
+                </div>
+              )}
+            </div>
+          )}
+
           {rounds.length === 0 && (
             <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
               <SectionIntro title="No Synced Rounds Yet">
@@ -2320,27 +2343,6 @@ export default function App() {
                 </table>
               </div>
             </div>
-          </div>
-
-          {/* Differential chart */}
-          <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
-            <div style={{ marginBottom: 8 }}>
-              <SectionIntro title="Score Differentials">
-                Bars and dates show your latest 20 rounds. The trend calculation also uses prior, excluded scores.
-              </SectionIntro>
-            </div>
-            <DifferentialBarChart points={differentialHistory} />
-            {differentialHistory.length > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--text)" }}>
-                <span>Latest: {Number(differentialHistory[differentialHistory.length - 1].value).toFixed(1)}</span>
-                <span>Best of latest 20: {Math.min(...differentialHistory.slice(-20).map((point) => Number(point.value))).toFixed(1)}</span>
-              </div>
-            )}
-            {differentialTrend && (
-              <div style={{ marginTop: 8, fontSize: 12, fontWeight: 800, color: differentialTrend.color }}>
-                {differentialTrend.label}
-              </div>
-            )}
           </div>
 
         </div>
