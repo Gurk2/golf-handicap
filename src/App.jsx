@@ -423,8 +423,10 @@ function roundImportKey(round) {
     : `${round.date}-${round.course}-${round.score}-${round.rating}-${round.slope}`;
 }
 
+// Retained as a standalone chart primitive for potential reuse.
+// eslint-disable-next-line no-unused-vars
 function LineChart({ points }) {
-  const [hoveredIndex, setHoveredIndex] = useState(null);
+  const [hoveredPoint, setHoveredPoint] = useState(null);
 
   if (points.length < 2) return (
     <div className="flex items-center justify-center h-24 text-sm" style={{ color: "var(--text)" }}>
@@ -432,7 +434,7 @@ function LineChart({ points }) {
     </div>
   );
 
-  const values = points.map((point) => point.value);
+  const values = points.map((point) => Number(point.value));
   const max = Math.max(...values);
   const min = Math.min(...values);
   const chartMax = Math.ceil((max + 0.3) * 2) / 2;
@@ -449,24 +451,36 @@ function LineChart({ points }) {
     return [...new Set(Array.from({ length: maxLabels }, (_, i) => Math.round((i * (count - 1)) / (maxLabels - 1))))];
   };
   const pointLabelIndexes = evenIndexes(points.length, 5);
-  const dateLabelIndexes = evenIndexes(points.length, 5);
   const shouldLabelPoint = (i) => pointLabelIndexes.includes(i);
-  const shouldLabelDate = (i) => dateLabelIndexes.includes(i);
   const ticks = [chartMin, chartMin + range / 2, chartMax].map(r1);
-
-  const pts = values.map((v, i) => {
-    const x = padX + (i / Math.max(values.length - 1, 1)) * (width - padX - padRight);
-    const y = padTop + (1 - (v - chartMin) / range) * (height - padTop - padBottom);
+  const allDates = points
+    .map((point) => new Date(`${point.date}T00:00:00`).getTime())
+    .filter(Number.isFinite);
+  const minDate = Math.min(...allDates);
+  const maxDate = Math.max(...allDates);
+  const dateRange = maxDate - minDate || 1;
+  const xForDate = (date) => {
+    const timestamp = new Date(`${date}T00:00:00`).getTime();
+    return padX + ((timestamp - minDate) / dateRange) * (width - padX - padRight);
+  };
+  const yForValue = (value) =>
+    padTop + (1 - (Number(value) - chartMin) / range) * (height - padTop - padBottom);
+  const pts = points.map((point) => {
+    const x = xForDate(point.date);
+    const y = yForValue(point.value);
     return [x, y];
   });
 
   const polyline = pts.map((p) => p.join(",")).join(" ");
   const baseY = height - padBottom;
   const area = `${pts[0][0]},${baseY} ${polyline} ${pts[pts.length - 1][0]},${baseY}`;
-  const hoveredPoint = hoveredIndex !== null ? points[hoveredIndex] : null;
-  const hoveredCoords = hoveredIndex !== null ? pts[hoveredIndex] : null;
+  const hoveredCoords = hoveredPoint?.coords ?? null;
   const tooltipX = hoveredCoords ? Math.min(width - 132, Math.max(64, hoveredCoords[0] - 54)) : 0;
   const tooltipY = hoveredCoords ? Math.max(12, hoveredCoords[1] - 58) : 0;
+  const dateLabelIndexes = evenIndexes([...new Set(points.map((point) => point.date))].length, 5);
+  const dateLabels = [...new Set(points.map((point) => point.date))]
+    .sort()
+    .filter((_, i) => dateLabelIndexes.includes(i));
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 220, display: "block" }} role="img" aria-label="Handicap progression chart">
@@ -493,31 +507,32 @@ function LineChart({ points }) {
       {pts.map(([x, y], i) => (
         <g
           key={`${points[i].date}-${i}`}
-          onMouseEnter={() => setHoveredIndex(i)}
-          onMouseLeave={() => setHoveredIndex(null)}
-          onFocus={() => setHoveredIndex(i)}
-          onBlur={() => setHoveredIndex(null)}
+          onMouseEnter={() => setHoveredPoint({ ...points[i], series: "Handicap", coords: [x, y] })}
+          onMouseLeave={() => setHoveredPoint(null)}
+          onFocus={() => setHoveredPoint({ ...points[i], series: "Handicap", coords: [x, y] })}
+          onBlur={() => setHoveredPoint(null)}
           tabIndex={0}
           style={{ outline: "none", cursor: "default" }}
         >
           <circle cx={x} cy={y} r="10" fill="transparent" />
-          <circle cx={x} cy={y} r={hoveredIndex === i ? "6" : "4"} fill="#22c55e" stroke="var(--card-bg)" strokeWidth="2" />
+          <circle cx={x} cy={y} r={hoveredPoint?.series === "Handicap" && hoveredPoint?.date === points[i].date ? "6" : "4"} fill="#22c55e" stroke="var(--card-bg)" strokeWidth="2" />
           {shouldLabelPoint(i) && (
             <text x={x} y={Math.max(18, y - 11)} textAnchor="middle" style={{ fill: "var(--text-h)", fontSize: 12, fontWeight: 800 }}>
               {points[i].value.toFixed(1)}
             </text>
           )}
-          {shouldLabelDate(i) && (
-            <text
-              x={x}
-              y={height - 24}
-              textAnchor={i === 0 ? "start" : i === points.length - 1 ? "end" : "middle"}
-              style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}
-            >
-              {shortDate(points[i].date)}
-            </text>
-          )}
         </g>
+      ))}
+      {dateLabels.map((date, i) => (
+        <text
+          key={`date-${date}`}
+          x={xForDate(date)}
+          y={height - 24}
+          textAnchor={i === 0 ? "start" : i === dateLabels.length - 1 ? "end" : "middle"}
+          style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}
+        >
+          {shortDate(date)}
+        </text>
       ))}
       {hoveredPoint && hoveredCoords && (
         <g pointerEvents="none">
@@ -527,11 +542,219 @@ function LineChart({ points }) {
             {shortDate(hoveredPoint.date)}
           </text>
           <text x={tooltipX + 10} y={tooltipY + 34} style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
-            Handicap {hoveredPoint.value.toFixed(1)}
+            {hoveredPoint.series} {Number(hoveredPoint.value).toFixed(1)}
           </text>
         </g>
       )}
     </svg>
+  );
+}
+
+function DifferentialBarChart({ points }) {
+  const [hoveredIndex, setHoveredIndex] = useState(null);
+  const [showBestAverage, setShowBestAverage] = useState(false);
+  const visiblePoints = points.slice(-20);
+
+  if (visiblePoints.length === 0) return (
+    <div className="flex items-center justify-center h-24 text-sm" style={{ color: "var(--text)" }}>
+      No score differentials available
+    </div>
+  );
+
+  const width = 760;
+  const height = 240;
+  const padX = 48;
+  const padRight = 24;
+  const padTop = 28;
+  const padBottom = 54;
+  const values = visiblePoints.map((point) => Number(point.value));
+  const allValues = points.map((point) => Number(point.value));
+  const rollingAverages = points
+    .map((_, i) => {
+      if (i < 4) return null;
+      return allValues.slice(i - 4, i + 1).reduce((sum, value) => sum + value, 0) / 5;
+    });
+  const trendValues = rollingAverages.filter((value) => value !== null);
+  const scaleValues = [...values, ...trendValues];
+  const chartMin = Math.min(0, Math.floor(Math.min(...scaleValues) - 1));
+  const chartMax = Math.max(1, Math.ceil(Math.max(...scaleValues) + 1));
+  const range = chartMax - chartMin || 1;
+  const plotHeight = height - padTop - padBottom;
+  const plotWidth = width - padX - padRight;
+  const slotWidth = plotWidth / visiblePoints.length;
+  const barWidth = Math.max(5, Math.min(24, slotWidth * 0.62));
+  const visibleStartIndex = points.length - visiblePoints.length;
+  const xForVisibleIndex = (i) => padX + i * slotWidth + slotWidth / 2;
+  const yForValue = (value) => padTop + (1 - (value - chartMin) / range) * plotHeight;
+  const baseY = yForValue(0);
+  const rollingAveragePoints = points
+    .map((_, i) => {
+      const average = rollingAverages[i];
+      if (average === null || i < visibleStartIndex) return null;
+      return {
+        x: xForVisibleIndex(i - visibleStartIndex),
+        y: yForValue(average),
+        value: average,
+        startDate: points[i - 4].date,
+        endDate: points[i].date,
+      };
+    })
+    .filter(Boolean);
+  const rollingAveragePath = rollingAveragePoints.map((point) => `${point.x},${point.y}`).join(" ");
+  const bestRollingAveragePoint = rollingAveragePoints.reduce(
+    (best, point) => !best || point.value < best.value ? point : best,
+    null
+  );
+  const tickValues = [chartMin, r1(chartMin + range / 2), chartMax];
+  const dateLabelIndexes = new Set(
+    visiblePoints.length <= 5
+      ? visiblePoints.map((_, i) => i)
+      : Array.from({ length: 5 }, (_, i) => Math.round((i * (visiblePoints.length - 1)) / 4))
+  );
+  const hoveredPoint = hoveredIndex === null ? null : visiblePoints[hoveredIndex];
+
+  return (
+    <>
+      {rollingAveragePoints.length >= 2 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 2, fontSize: 11, color: "var(--text)", fontWeight: 700 }}>
+          <span aria-hidden="true" style={{ display: "inline-block", width: 20, borderTop: "3px solid #1e3a8a" }} />
+          5-round average · includes prior scores
+        </div>
+      )}
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 220, display: "block" }} role="img" aria-label="Latest 20 score differentials with five-round rolling average across all rounds">
+      {tickValues.map((tick) => {
+        const y = yForValue(tick);
+        return (
+          <g key={tick}>
+            <line x1={padX} y1={y} x2={width - padRight} y2={y} stroke="var(--table-border)" strokeWidth="1" />
+            <text x={padX - 10} y={y + 4} textAnchor="end" style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
+              {tick.toFixed(1)}
+            </text>
+          </g>
+        );
+      })}
+      {visiblePoints.map((point, i) => {
+        const x = xForVisibleIndex(i) - barWidth / 2;
+        const valueY = yForValue(point.value);
+        const y = Math.min(valueY, baseY);
+        const barHeight = Math.max(2, Math.abs(baseY - valueY));
+        const isHovered = hoveredIndex === i;
+        return (
+          <g
+            key={`${point.date}-${i}`}
+            onMouseEnter={() => setHoveredIndex(i)}
+            onMouseLeave={() => setHoveredIndex(null)}
+            onFocus={() => setHoveredIndex(i)}
+            onBlur={() => setHoveredIndex(null)}
+            tabIndex={0}
+            style={{ outline: "none", cursor: "default" }}
+          >
+            <rect x={padX + i * slotWidth} y={padTop} width={slotWidth} height={plotHeight} fill="transparent" />
+            <rect x={x} y={y} width={barWidth} height={barHeight} rx="3" fill={isHovered ? "#2563eb" : "#60a5fa"} />
+          </g>
+        );
+      })}
+      {rollingAveragePoints.length >= 2 && (
+        <>
+          <polyline
+            points={rollingAveragePath}
+            fill="none"
+            stroke="#1e3a8a"
+            strokeWidth="3"
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            pointerEvents="none"
+          />
+          {rollingAveragePoints.map((point, i) => (
+            <circle
+              key={`rolling-average-${i}`}
+              cx={point.x}
+              cy={point.y}
+              r="3"
+              fill="#1e3a8a"
+              stroke="var(--card-bg)"
+              strokeWidth="1.5"
+              pointerEvents="none"
+            />
+          ))}
+          {bestRollingAveragePoint && (() => {
+            const point = bestRollingAveragePoint;
+            const diamondSize = 7;
+            const labelX = Math.min(width - padRight - 4, Math.max(padX + 4, point.x));
+            const labelY = point.y < padTop + 28 ? point.y + 25 : point.y - 14;
+            return (
+              <g
+                style={{ cursor: "help", outline: "none" }}
+                tabIndex={0}
+                onMouseEnter={() => setShowBestAverage(true)}
+                onMouseLeave={() => setShowBestAverage(false)}
+                onFocus={() => setShowBestAverage(true)}
+                onBlur={() => setShowBestAverage(false)}
+              >
+                <polygon
+                  points={`${point.x},${point.y - diamondSize} ${point.x + diamondSize},${point.y} ${point.x},${point.y + diamondSize} ${point.x - diamondSize},${point.y}`}
+                  fill="#f59e0b"
+                  stroke="var(--card-bg)"
+                  strokeWidth="2"
+                />
+                <text
+                  x={labelX}
+                  y={labelY}
+                  textAnchor={labelX === padX + 4 ? "start" : labelX === width - padRight - 4 ? "end" : "middle"}
+                  style={{ fill: "#b45309", fontSize: 11, fontWeight: 800 }}
+                >
+                  Best 5-round run · {point.value.toFixed(1)}
+                </text>
+              </g>
+            );
+          })()}
+          {showBestAverage && bestRollingAveragePoint && (() => {
+            const point = bestRollingAveragePoint;
+            const tooltipWidth = 142;
+            const tooltipX = Math.min(width - padRight - tooltipWidth, Math.max(padX, point.x - tooltipWidth / 2));
+            const tooltipY = point.y < padTop + 58 ? point.y + 13 : point.y - 57;
+            return (
+              <g pointerEvents="none">
+                <rect x={tooltipX} y={tooltipY} width={tooltipWidth} height="44" rx="7" fill="var(--card-bg)" stroke="#f59e0b" strokeWidth="1" />
+                <text x={tooltipX + 10} y={tooltipY + 17} style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
+                  {shortDate(point.startDate)} – {shortDate(point.endDate)}
+                </text>
+                <text x={tooltipX + 10} y={tooltipY + 34} style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
+                  5-round average {point.value.toFixed(1)}
+                </text>
+              </g>
+            );
+          })()}
+        </>
+      )}
+      {visiblePoints.map((point, i) => dateLabelIndexes.has(i) && (
+        <text
+          key={`differential-date-${point.date}-${i}`}
+          x={xForVisibleIndex(i)}
+          y={height - 22}
+          textAnchor={i === 0 ? "start" : i === visiblePoints.length - 1 ? "end" : "middle"}
+          style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}
+        >
+          {shortDate(point.date)}
+        </text>
+      ))}
+      {hoveredPoint && (() => {
+        const x = xForVisibleIndex(hoveredIndex);
+        const tooltipX = Math.min(width - 132, Math.max(52, x - 58));
+        return (
+          <g pointerEvents="none">
+            <rect x={tooltipX} y={8} width="120" height="44" rx="7" fill="var(--card-bg)" stroke="#93c5fd" strokeWidth="1" />
+            <text x={tooltipX + 10} y={25} style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
+              {shortDate(hoveredPoint.date)}
+            </text>
+            <text x={tooltipX + 10} y={42} style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
+              Differential {Number(hoveredPoint.value).toFixed(1)}
+            </text>
+          </g>
+        );
+      })()}
+      </svg>
+    </>
   );
 }
 
@@ -728,15 +951,6 @@ export default function App() {
   }, [syncedHandicapHistory]);
   const calculatedHcp = diffs.length >= 8 ? handicap(diffs) : null;
   const hcp = calculatedHcp ?? apiHandicapIndex;
-  const latestCalculatedHandicapPoint = useMemo(() => {
-    if (calculatedHcp === null || rounds.length === 0) return null;
-    const latestRound = rounds[rounds.length - 1];
-    return {
-      date: latestRound.date ?? todayISO(),
-      value: calculatedHcp,
-      source: "calculated",
-    };
-  }, [calculatedHcp, rounds]);
   const cutLine = useMemo(() => {
     if (!hcp) return null;
     const sorted = [...clampedWithDiff].sort((a, b) => a.d - b.d).slice(0, 8);
@@ -760,15 +974,23 @@ export default function App() {
     };
   }, [rounds, countingIds]);
 
-  const hcpHist = useMemo(() => {
-    if (!latestCalculatedHandicapPoint) return syncedHandicapHistory;
-    const officialHistory = syncedHandicapHistory.filter((entry) => entry.date !== latestCalculatedHandicapPoint.date);
-    return [...officialHistory, latestCalculatedHandicapPoint].sort((a, b) => new Date(a.date) - new Date(b.date));
-  }, [latestCalculatedHandicapPoint, syncedHandicapHistory]);
-  const hcpSourceLabel = latestCalculatedHandicapPoint
-    ? "from Golf Ireland history, with latest index recalculated"
-    : "from Golf Ireland history";
-
+  const differentialHistory = useMemo(() =>
+    rounds
+      .map((round) => ({ date: round.date, value: scoreDifferentialForRound(round) }))
+      .filter((point) => point.date && point.value !== null),
+    [rounds]
+  );
+  const differentialTrend = useMemo(() => {
+    const recent = differentialHistory.slice(-10).map((point) => Number(point.value));
+    if (recent.length < 10) return null;
+    const previousAverage = recent.slice(0, 5).reduce((sum, value) => sum + value, 0) / 5;
+    const latestAverage = recent.slice(5).reduce((sum, value) => sum + value, 0) / 5;
+    const change = r1(latestAverage - previousAverage);
+    if (Math.abs(change) < 0.1) return { label: "Trend: steady", color: "var(--text)" };
+    return change < 0
+      ? { label: `Trend: improving by ${Math.abs(change).toFixed(1)} vs previous 5 rounds`, color: "#15803d" }
+      : { label: `Trend: worsening by ${change.toFixed(1)} vs previous 5 rounds`, color: "#b45309" };
+  }, [differentialHistory]);
   const updateTarget = async (value) => {
     const nextTarget = value === "" ? "" : Number(value);
     setTarget(nextTarget);
@@ -2100,18 +2322,23 @@ export default function App() {
             </div>
           </div>
 
-          {/* Progression chart */}
+          {/* Differential chart */}
           <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
-            <div style={{ marginBottom: 12 }}>
-              <SectionIntro title="Handicap Progression">
-                Handicap index {hcpSourceLabel}
+            <div style={{ marginBottom: 8 }}>
+              <SectionIntro title="Score Differentials">
+                Bars and dates show your latest 20 rounds. The trend calculation also uses prior, excluded scores.
               </SectionIntro>
             </div>
-            <LineChart points={hcpHist} />
-            {hcpHist.length >= 2 && (
+            <DifferentialBarChart points={differentialHistory} />
+            {differentialHistory.length > 0 && (
               <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--text)" }}>
-                <span>Start: {hcpHist[0].value.toFixed(1)}</span>
-                <span>Now: {hcpHist[hcpHist.length - 1].value.toFixed(1)}</span>
+                <span>Latest: {Number(differentialHistory[differentialHistory.length - 1].value).toFixed(1)}</span>
+                <span>Best of latest 20: {Math.min(...differentialHistory.slice(-20).map((point) => Number(point.value))).toFixed(1)}</span>
+              </div>
+            )}
+            {differentialTrend && (
+              <div style={{ marginTop: 8, fontSize: 12, fontWeight: 800, color: differentialTrend.color }}>
+                {differentialTrend.label}
               </div>
             )}
           </div>
