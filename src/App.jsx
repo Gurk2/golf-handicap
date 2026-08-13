@@ -150,6 +150,13 @@ function shortDate(value) {
   return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" });
 }
 
+function monthYear(value) {
+  if (!value) return "";
+  const date = new Date(`${value}T00:00:00`);
+  if (isNaN(date.getTime())) return value;
+  return date.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+}
+
 function clamp20(arr) {
   return arr.length <= 20 ? arr : arr.slice(arr.length - 20);
 }
@@ -758,6 +765,43 @@ function DifferentialBarChart({ points }) {
   );
 }
 
+function RecentFormInsight({ insight }) {
+  if (!insight) return null;
+
+  return (
+    <aside className="recent-form-card" aria-label="Recent form summary">
+      <div className="recent-form-eyebrow">
+        <span aria-hidden="true">↘</span>
+        Recent form
+      </div>
+      <div className="recent-form-heading">{insight.heading}</div>
+      <p className="recent-form-copy">{insight.summary}</p>
+
+      <div className="recent-form-stats">
+        <div>
+          <span>Recent 5</span>
+          <strong>{insight.latestAverage.toFixed(1)}</strong>
+        </div>
+        <div>
+          <span>Previous 5</span>
+          <strong>{insight.previousAverage.toFixed(1)}</strong>
+        </div>
+        <div>
+          <span>Earlier avg</span>
+          <strong>{insight.earlierAverage.toFixed(1)}</strong>
+        </div>
+      </div>
+
+      {insight.previousBest && (
+        <p className="recent-form-context">
+          The previous best five-round run ended in {monthYear(insight.previousBest.endDate)} at {insight.previousBest.average.toFixed(1)}.
+        </p>
+      )}
+      <div className="recent-form-encouragement">{insight.encouragement}</div>
+    </aside>
+  );
+}
+
 function HelpTip({ text, align = "left" }) {
   return (
     <span className="help-tip" style={{ "--tip-left": align === "right" ? "auto" : "0", "--tip-right": align === "right" ? "0" : "auto" }}>
@@ -891,6 +935,9 @@ export default function App() {
   const [plannerMode, setPlannerMode] = useState("synced");
   const [manualPlanner, setManualPlanner] = useState({ course: "", tee: "", holes: "18 holes", rating: "", slope: "", pcc: 0 });
   const [courseLookup, setCourseLookup] = useState({ country: "NIR", query: "", status: "idle", message: "", courses: [], selectedCourseId: "", tees: [] });
+  const [showManualRound, setShowManualRound] = useState(false);
+  const [manualRound, setManualRound] = useState({ date: todayISO(), score: "" });
+  const [manualRoundState, setManualRoundState] = useState({ status: "idle", message: "" });
   const [courseHandicapCourse, setCourseHandicapCourse] = useState({ course: "", rating: "", slope: 113, pcc: 0 });
   const [showExcludedRounds, setShowExcludedRounds] = useState(false);
   const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "", displayName: "" });
@@ -980,16 +1027,62 @@ export default function App() {
       .filter((point) => point.date && point.value !== null),
     [rounds]
   );
-  const differentialTrend = useMemo(() => {
-    const recent = differentialHistory.slice(-10).map((point) => Number(point.value));
-    if (recent.length < 10) return null;
-    const previousAverage = recent.slice(0, 5).reduce((sum, value) => sum + value, 0) / 5;
-    const latestAverage = recent.slice(5).reduce((sum, value) => sum + value, 0) / 5;
-    const change = r1(latestAverage - previousAverage);
-    if (Math.abs(change) < 0.1) return { label: "Trend: steady", color: "var(--text)" };
-    return change < 0
-      ? { label: `Trend: improving by ${Math.abs(change).toFixed(1)} vs previous 5 rounds`, color: "#15803d" }
-      : { label: `Trend: worsening by ${change.toFixed(1)} vs previous 5 rounds`, color: "#b45309" };
+  const recentFormInsight = useMemo(() => {
+    if (differentialHistory.length < 10) return null;
+    const average = (points) => points.reduce((sum, point) => sum + Number(point.value), 0) / points.length;
+    const latestFive = differentialHistory.slice(-5);
+    const previousFive = differentialHistory.slice(-10, -5);
+    const earlierRounds = differentialHistory.slice(0, -5);
+    const historicalWindows = [];
+
+    for (let endIndex = 4; endIndex <= differentialHistory.length - 6; endIndex += 1) {
+      const window = differentialHistory.slice(endIndex - 4, endIndex + 1);
+      historicalWindows.push({
+        average: average(window),
+        startDate: window[0].date,
+        endDate: window[4].date,
+      });
+    }
+
+    const latestAverage = average(latestFive);
+    const previousAverage = average(previousFive);
+    const earlierAverage = average(earlierRounds);
+    const previousBest = historicalWindows.reduce(
+      (best, window) => !best || window.average < best.average ? window : best,
+      null
+    );
+    const versusPrevious = r1(latestAverage - previousAverage);
+    const isRecord = previousBest && latestAverage < previousBest.average - 0.05;
+    const isLevelRecord = previousBest && Math.abs(latestAverage - previousBest.average) <= 0.05;
+    const improving = versusPrevious < -0.05;
+    const steady = Math.abs(versusPrevious) <= 0.05;
+
+    let heading = "Building a stronger run";
+    if (isRecord) heading = "Your best five-round run yet";
+    else if (isLevelRecord) heading = "Matching your best five-round run";
+    else if (improving) heading = "Moving in the right direction";
+    else if (steady) heading = "Holding steady";
+
+    let summary = `Your recent five-round average is ${latestAverage.toFixed(1)}, `;
+    if (improving) summary += `${Math.abs(versusPrevious).toFixed(1)} lower than the previous five.`;
+    else if (steady) summary += "level with the previous five.";
+    else summary += `${versusPrevious.toFixed(1)} higher than the previous five.`;
+
+    let encouragement = "Keep grinding — the next good card can turn the line.";
+    if (isRecord) encouragement = "That is real progress. Keep grinding!";
+    else if (isLevelRecord) encouragement = "You are right on your best pace. Keep it going!";
+    else if (improving) encouragement = "The work is showing. Keep grinding!";
+    else if (steady) encouragement = "A solid base — one strong card can move it lower.";
+
+    return {
+      heading,
+      summary,
+      encouragement,
+      latestAverage,
+      previousAverage,
+      earlierAverage,
+      previousBest,
+    };
   }, [differentialHistory]);
   const updateTarget = async (value) => {
     const nextTarget = value === "" ? "" : Number(value);
@@ -1073,6 +1166,38 @@ export default function App() {
       par: selectedTee.par,
       pcc: manualPlanner.pcc ?? 0,
     });
+  };
+
+  const addManualRound = async () => {
+    const score = Number(manualRound.score);
+    const rating = Number(manualPlanner.rating);
+    const slope = Number(manualPlanner.slope);
+    if (!manualRound.date || !Number.isFinite(score) || score <= 0 || !manualPlanner.course.trim() || !Number.isFinite(rating) || !Number.isFinite(slope) || slope <= 0) {
+      setManualRoundState({ status: "error", message: "Enter a date, score, course, rating and valid slope." });
+      return;
+    }
+
+    const existingMatch = rounds.find((round) => round.date === manualRound.date && Number(round.score) === score);
+    if (existingMatch) {
+      setManualRoundState({ status: "error", message: "A round with this date and score is already recorded." });
+      return;
+    }
+
+    await db.rounds.add({
+      date: manualRound.date,
+      course: manualPlanner.course.trim(),
+      tee: manualPlanner.tee?.trim() ?? "",
+      holes: manualPlanner.holes || "18 holes",
+      par: manualPlanner.par === "" || manualPlanner.par === undefined ? undefined : Number(manualPlanner.par),
+      score,
+      rating,
+      slope,
+      pcc: Number(manualPlanner.pcc) || 0,
+      source: "manual",
+      sourceId: `manual-${manualRound.date}-${score}-${Date.now()}`,
+    });
+    setManualRound({ date: todayISO(), score: "" });
+    setManualRoundState({ status: "success", message: "Manual round added. A matching Golf Ireland round will replace it on sync." });
   };
 
   const saveGolfIrelandSettings = async () => {
@@ -1182,16 +1307,21 @@ export default function App() {
       }
 
       const uniqueRounds = [...new Map(importedRounds.map((round) => [roundImportKey(round), round])).values()];
+      const manualRounds = await db.rounds.where("source").equals("manual").toArray();
+      const golfIrelandMatchKeys = new Set(uniqueRounds.map((round) => `${round.date}|${Number(round.score)}`));
+      const unmatchedManualRounds = manualRounds.filter((round) => !golfIrelandMatchKeys.has(`${round.date}|${Number(round.score)}`));
+      const replacedManualCount = manualRounds.length - unmatchedManualRounds.length;
       const uniqueHistory = [...new Map(importedHandicapHistory.map((entry) => [entry.date, entry])).values()];
       await db.transaction("rw", db.rounds, db.courses, db.handicapHistory, async () => {
         await Promise.all([db.rounds.clear(), db.courses.clear(), db.handicapHistory.clear()]);
         if (uniqueRounds.length > 0) await db.rounds.bulkAdd(uniqueRounds);
+        if (unmatchedManualRounds.length > 0) await db.rounds.bulkAdd(unmatchedManualRounds);
         if (uniqueHistory.length > 0) await db.handicapHistory.bulkAdd(uniqueHistory);
       });
 
       setSyncState({
         status: "success",
-        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap history point${uniqueHistory.length === 1 ? "" : "s"}` : ""}. Local cache was replaced and only the latest index is recalculated from synced rounds.`,
+        message: `Synced ${uniqueRounds.length} Golf Ireland round${uniqueRounds.length === 1 ? "" : "s"}${uniqueHistory.length ? ` and ${uniqueHistory.length} official handicap history point${uniqueHistory.length === 1 ? "" : "s"}` : ""}.${replacedManualCount ? ` Replaced ${replacedManualCount} matching manual round${replacedManualCount === 1 ? "" : "s"}.` : ""}${unmatchedManualRounds.length ? ` Kept ${unmatchedManualRounds.length} unmatched manual round${unmatchedManualRounds.length === 1 ? "" : "s"}.` : ""}`,
       });
       setGolfIrelandSettings(nextGolfIrelandSettings);
       await db.settings.put({ key: golfIrelandSettingsKey, value: nextGolfIrelandSettings });
@@ -1744,6 +1874,88 @@ export default function App() {
             )}
           </div>
 
+          <div className="rounded-xl" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)", overflow: "hidden" }}>
+            <button
+              type="button"
+              onClick={() => setShowManualRound((shown) => !shown)}
+              aria-expanded={showManualRound}
+              style={{ width: "100%", border: 0, background: "transparent", color: "var(--text-h)", padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", textAlign: "left" }}
+            >
+              <span>
+                <strong style={{ display: "block", fontSize: 14, textTransform: "uppercase", letterSpacing: "0.06em" }}>Add a round manually</strong>
+                <span style={{ display: "block", marginTop: 3, color: "var(--text)", fontSize: 12 }}>Use an official course and tee lookup, or enter the rating details yourself.</span>
+              </span>
+              <span aria-hidden="true" style={{ fontSize: 20 }}>{showManualRound ? "−" : "+"}</span>
+            </button>
+
+            {showManualRound && (
+              <div style={{ borderTop: "1px solid var(--border)", padding: 20 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+                  <select
+                    aria-label="Manual round course country"
+                    value={courseLookup.country}
+                    onChange={(e) => setCourseLookup({ ...courseLookup, country: e.target.value, courses: [], selectedCourseId: "", tees: [], message: "" })}
+                    style={{ ...fieldControlStyle, padding: "0 10px", flex: "0 1 150px" }}
+                  >
+                    {courseRatingCountries.map(([code, name]) => <option key={code} value={code}>{name}</option>)}
+                  </select>
+                  <input
+                    aria-label="Manual round course search"
+                    placeholder="Search course name"
+                    value={courseLookup.query}
+                    onChange={(e) => setCourseLookup({ ...courseLookup, query: e.target.value })}
+                    onKeyDown={(e) => { if (e.key === "Enter") searchCourseRatings(); }}
+                    style={{ ...fieldControlStyle, padding: "0 12px", flex: "1 1 240px", maxWidth: 380 }}
+                  />
+                  <button type="button" onClick={searchCourseRatings} disabled={courseLookup.status === "loading"} style={{ ...neutralButtonStyle, width: "auto", height: 40, padding: "0 16px", borderRadius: 8 }}>
+                    {courseLookup.status === "loading" ? "Searching…" : "Look up course"}
+                  </button>
+                </div>
+
+                {(courseLookup.courses.length > 0 || courseLookup.tees.length > 0 || courseLookup.message) && (
+                  <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 10, marginBottom: 12, background: "rgba(100,116,139,0.06)" }}>
+                    {courseLookup.message && <div style={{ fontSize: 12, color: courseLookup.status === "error" ? "#dc2626" : "var(--text)", marginBottom: courseLookup.courses.length || courseLookup.tees.length ? 8 : 0 }}>{courseLookup.message}</div>}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {courseLookup.courses.length > 0 && (
+                        <select aria-label="Manual round course" value={courseLookup.selectedCourseId} onChange={(e) => loadCourseTees(e.target.value)} style={{ ...fieldControlStyle, padding: "0 10px", width: "min(100%, 380px)" }}>
+                          <option value="">Choose course</option>
+                          {courseLookup.courses.map((course) => <option key={course.courseID} value={course.courseID}>{course.fullName} - {course.city}{course.stateDisplay ? `, ${course.stateDisplay}` : ""}</option>)}
+                        </select>
+                      )}
+                      {courseLookup.tees.length > 0 && (
+                        <select aria-label="Manual round tee" value="" onChange={(e) => selectCourseTee(e.target.value)} style={{ ...fieldControlStyle, padding: "0 10px", width: "min(100%, 520px)" }}>
+                          <option value="">Choose tee / holes / rating</option>
+                          {courseLookup.tees.map((tee, index) => <option key={`${tee.tee}-${tee.gender}-${tee.rating}-${tee.slope}-${index}`} value={index}>{tee.tee}, {tee.gender}, {tee.holes}, rating {tee.rating}, slope {tee.slope}{tee.par ? `, par ${tee.par}` : ""}</option>)}
+                        </select>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(125px, 1fr))", gap: 10 }}>
+                  <InputField label="Date" type="date" value={manualRound.date} onChange={(e) => setManualRound({ ...manualRound, date: e.target.value })} />
+                  <InputField label="Score" type="number" min="1" value={manualRound.score} onChange={(e) => setManualRound({ ...manualRound, score: e.target.value })} />
+                  <InputField label="Course" value={manualPlanner.course} onChange={(e) => applyManualPlanner({ ...manualPlanner, course: e.target.value })} />
+                  <InputField label="Tee" value={manualPlanner.tee} onChange={(e) => applyManualPlanner({ ...manualPlanner, tee: e.target.value })} />
+                  <div className="flex flex-col gap-1">
+                    <label style={fieldLabelStyle}>Holes</label>
+                    <select value={manualPlanner.holes} onChange={(e) => applyManualPlanner({ ...manualPlanner, holes: e.target.value })} style={{ ...fieldControlStyle, padding: "0 10px" }}>
+                      <option value="18 holes">18 holes</option><option value="9 holes">9 holes</option><option value="Front 9">Front 9</option><option value="Back 9">Back 9</option>
+                    </select>
+                  </div>
+                  <InputField label="Rating" type="number" step="0.1" value={manualPlanner.rating} onChange={(e) => applyManualPlanner({ ...manualPlanner, rating: e.target.value })} />
+                  <InputField label="Slope" type="number" value={manualPlanner.slope} onChange={(e) => applyManualPlanner({ ...manualPlanner, slope: e.target.value })} />
+                  <InputField label="PCC" type="number" value={manualPlanner.pcc} onChange={(e) => applyManualPlanner({ ...manualPlanner, pcc: e.target.value })} />
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginTop: 14 }}>
+                  <button type="button" onClick={addManualRound} style={{ ...btnStyle("#166534", "#fff"), width: "auto", height: 40, padding: "0 18px", borderRadius: 8 }}>Add round</button>
+                  <span style={{ fontSize: 12, color: manualRoundState.status === "error" ? "#dc2626" : "#166534", fontWeight: 700 }}>{manualRoundState.message}</span>
+                </div>
+                <p style={{ marginTop: 10, color: "var(--text)", fontSize: 11 }}>On sync, an official Golf Ireland round with the same date and score automatically replaces this manual entry.</p>
+              </div>
+            )}
+          </div>
+
           {/* Rounds table */}
           {rounds.length > 0 && (
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
@@ -1844,6 +2056,9 @@ export default function App() {
                               {isNewest && (
                                 <span style={{ fontSize: 10, fontWeight: 700, background: "#1d4ed8", color: "#fff", borderRadius: 999, padding: "2px 7px", letterSpacing: "0.05em" }}>NEW</span>
                               )}
+                              {r.source === "manual" && (
+                                <span title="This entry will be replaced when Golf Ireland returns the same date and score" style={{ fontSize: 10, fontWeight: 700, background: "#b45309", color: "#fff", borderRadius: 999, padding: "2px 7px", letterSpacing: "0.05em" }}>MANUAL</span>
+                              )}
                               {isExcluded && (
                                 <span style={{ fontSize: 10, fontWeight: 700, background: "#64748b", color: "#fff", borderRadius: 999, padding: "2px 7px", letterSpacing: "0.05em" }}>EXCLUDED</span>
                               )}
@@ -1894,18 +2109,18 @@ export default function App() {
                   Bars and dates show your latest 20 rounds. The trend calculation also uses prior, excluded scores.
                 </SectionIntro>
               </div>
-              <DifferentialBarChart points={differentialHistory} />
-              {differentialHistory.length > 0 && (
-                <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--text)" }}>
-                  <span>Latest: {Number(differentialHistory[differentialHistory.length - 1].value).toFixed(1)}</span>
-                  <span>Best of latest 20: {Math.min(...differentialHistory.slice(-20).map((point) => Number(point.value))).toFixed(1)}</span>
+              <div className="differential-insight-layout">
+                <div style={{ minWidth: 0 }}>
+                  <DifferentialBarChart points={differentialHistory} />
+                  {differentialHistory.length > 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--text)" }}>
+                      <span>Latest: {Number(differentialHistory[differentialHistory.length - 1].value).toFixed(1)}</span>
+                      <span>Best of latest 20: {Math.min(...differentialHistory.slice(-20).map((point) => Number(point.value))).toFixed(1)}</span>
+                    </div>
+                  )}
                 </div>
-              )}
-              {differentialTrend && (
-                <div style={{ marginTop: 8, fontSize: 12, fontWeight: 800, color: differentialTrend.color }}>
-                  {differentialTrend.label}
-                </div>
-              )}
+                <RecentFormInsight insight={recentFormInsight} />
+              </div>
             </div>
           )}
 

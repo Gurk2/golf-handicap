@@ -131,3 +131,115 @@ code {
   padding: 4px 8px;
   background: var(--code-bg);
 }
+
+.differential-insight-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
+  gap: 20px;
+  align-items: stretch;
+}
+
+.recent-form-card {
+  border: 1px solid rgba(34, 197, 94, 0.28);
+  border-radius: 14px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(34, 197, 94, 0.16), transparent 48%),
+    linear-gradient(145deg, rgba(240, 253, 244, 0.92), rgba(248, 250, 252, 0.72));
+  display: flex;
+  flex-direction: column;
+}
+
+.recent-form-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #15803d;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recent-form-heading {
+  margin-top: 10px;
+  color: var(--text-h);
+  font-size: 21px;
+  font-weight: 850;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.recent-form-copy,
+.recent-form-context {
+  margin-top: 9px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.recent-form-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 15px;
+}
+
+.recent-form-stats div {
+  padding: 9px 7px;
+  border: 1px solid rgba(34, 197, 94, 0.2);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.58);
+  text-align: center;
+}
+
+.recent-form-stats span {
+  display: block;
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.recent-form-stats strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-h);
+  font-size: 18px;
+}
+
+.recent-form-context {
+  padding-top: 10px;
+  border-top: 1px solid rgba(34, 197, 94, 0.18);
+}
+
+.recent-form-encouragement {
+  margin-top: auto;
+  padding-top: 14px;
+  color: #166534;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+@media (max-width: 900px) {
+  .differential-insight-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .recent-form-card {
+    background:
+      radial-gradient(circle at 100% 0%, rgba(34, 197, 94, 0.16), transparent 48%),
+      rgba(20, 35, 28, 0.76);
+  }
+
+  .recent-form-stats div {
+    background: rgba(15, 23, 42, 0.42);
+  }
+
+  .recent-form-encouragement,
+  .recent-form-eyebrow {
+    color: #86efac;
+  }
+}
