@@ -1424,7 +1424,15 @@ export default function App() {
     }
 
     const scenarioDiffs = clampedWithDiff.map(({ id, d }) => id === latestRound.id ? alternateDiff : d);
-    const projectedHcp = handicap(scenarioDiffs);
+    const projectedHcpBeforeEsr = handicap(scenarioDiffs);
+    const roundHandicapIndex = Number(latestRound.handicapIndex);
+    const handicapIndexAtPlay = !isNaN(roundHandicapIndex) ? roundHandicapIndex : hcp;
+    const esrReduction = handicapIndexAtPlay !== null
+      ? exceptionalScoreReduction(alternateDiff, handicapIndexAtPlay)
+      : 0;
+    const projectedHcp = projectedHcpBeforeEsr !== null
+      ? r1(projectedHcpBeforeEsr - esrReduction)
+      : null;
     const change = hcp !== null && projectedHcp !== null ? r1(projectedHcp - hcp) : null;
     const originalCounts = countingIds.has(latestRound.id);
     const scenarioCountingIds = new Set(
@@ -1442,6 +1450,9 @@ export default function App() {
       originalDiff,
       alternateDiff,
       projectedHcp,
+      projectedHcpBeforeEsr,
+      handicapIndexAtPlay,
+      esrReduction,
       change,
       originalCounts,
       alternateCounts: scenarioCountingIds.has(latestRound.id),
@@ -2182,6 +2193,14 @@ export default function App() {
                     <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(34,197,94,0.07)" }}>
                       <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>What-if index</div>
                       <div style={{ fontSize: 28, fontWeight: 800, color: "var(--text-h)", lineHeight: 1.15 }}>{lastRoundScenario.projectedHcp.toFixed(1)}</div>
+                      {lastRoundScenario.esrReduction > 0 && (
+                        <div style={{ marginTop: 4, color: "#0f766e", fontSize: 11, fontWeight: 800 }}>
+                          Includes ESR -{lastRoundScenario.esrReduction.toFixed(1)}
+                          {lastRoundScenario.projectedHcpBeforeEsr !== null
+                            ? ` (normal ${lastRoundScenario.projectedHcpBeforeEsr.toFixed(1)})`
+                            : ""}
+                        </div>
+                      )}
                     </div>
                     <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, background: "rgba(59,130,246,0.07)" }}>
                       <div style={{ fontSize: 11, fontWeight: 800, color: "var(--text)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Change</div>
@@ -2202,6 +2221,11 @@ export default function App() {
                       <div style={{ fontSize: 12, color: "var(--text)", marginTop: 4 }}>
                         {lastRoundScenario.alternateCounts ? "Would count" : "Would not count"} in best 8
                       </div>
+                      {lastRoundScenario.handicapIndexAtPlay !== null && (
+                        <div style={{ fontSize: 11, color: "var(--text)", marginTop: 4 }}>
+                          ESR measured against {Number(lastRoundScenario.handicapIndexAtPlay).toFixed(1)}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
