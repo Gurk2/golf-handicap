@@ -1009,6 +1009,44 @@ export default function App() {
   }, [hcp, clampedWithDiff]);
 
   const displayedRounds = [...rounds].reverse();
+  const allTimeRankedRounds = useMemo(() =>
+    rounds
+      .map((round) => ({ round, differential: scoreDifferentialForRound(round) }))
+      .filter(({ differential }) => differential !== null)
+      .sort((a, b) => a.differential - b.differential || String(b.round.date).localeCompare(String(a.round.date)))
+      .map((entry, index) => ({ ...entry, rank: index + 1 })),
+    [rounds]
+  );
+  const latestAllTimeRank = allTimeRankedRounds.find(({ round }) => round.id === latestRound?.id) ?? null;
+  const leaderboardInsight = useMemo(() => {
+    if (allTimeRankedRounds.length === 0 || !latestRound?.date) return null;
+
+    const latestDate = new Date(`${latestRound.date}T00:00:00`);
+    if (isNaN(latestDate.getTime())) return null;
+    const twoMonthsAgo = new Date(latestDate);
+    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
+
+    const leaderboardSize = Math.min(10, allTimeRankedRounds.length);
+    const recentBestCount = allTimeRankedRounds
+      .slice(0, leaderboardSize)
+      .filter(({ round }) => {
+        const roundDate = new Date(`${round.date}T00:00:00`);
+        return !isNaN(roundDate.getTime()) && roundDate >= twoMonthsAgo && roundDate <= latestDate;
+      }).length;
+
+    if (recentBestCount > 0) {
+      const groupLabel = leaderboardSize === allTimeRankedRounds.length
+        ? `${leaderboardSize} ranked round${leaderboardSize === 1 ? "" : "s"}`
+        : `top ${leaderboardSize} rounds`;
+      return `${recentBestCount} of your ${groupLabel} ${recentBestCount === 1 ? "has" : "have"} come in the last two months. Keep it going!`;
+    }
+
+    if (latestAllTimeRank) {
+      return `Your latest round sits at #${latestAllTimeRank.rank} all time. Every new card is another chance to climb.`;
+    }
+
+    return null;
+  }, [allTimeRankedRounds, latestAllTimeRank, latestRound]);
   const nextRoundDrop = useMemo(() => {
     const recentRounds = clamp20(rounds);
     if (recentRounds.length < 20) return null;
@@ -2233,6 +2271,118 @@ export default function App() {
                     {lastRoundScenario?.message ?? "Sync rounds before using the last round what-if."}
                   </div>
                 )}
+              </div>
+            )}
+
+            {allTimeRankedRounds.length > 0 && (
+              <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
+                <div style={{ marginBottom: 12 }}>
+                  <SectionIntro title="Best Rounds — All Time">
+                    Every synced round ranked by score differential. Lower is better.
+                  </SectionIntro>
+                  {latestAllTimeRank && (
+                    <div style={{ display: "inline-flex", alignItems: "baseline", gap: 6, marginTop: 9, borderRadius: 999, padding: "5px 10px", background: "#dcfce7", color: "#166534", fontSize: 11, fontWeight: 800 }}>
+                      Latest round: #{latestAllTimeRank.rank} of {allTimeRankedRounds.length}
+                      <span style={{ opacity: 0.8 }}>· {latestAllTimeRank.differential.toFixed(1)}</span>
+                    </div>
+                  )}
+                  {leaderboardInsight && (
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "40px 1fr",
+                      gap: 11,
+                      alignItems: "center",
+                      marginTop: 12,
+                      border: "1px solid rgba(22,163,74,0.42)",
+                      borderRadius: 13,
+                      padding: "12px 14px",
+                      background: "linear-gradient(135deg, rgba(220,252,231,0.98), rgba(187,247,208,0.68))",
+                      boxShadow: "0 10px 28px -18px rgba(21,128,61,0.9)",
+                    }}>
+                      <div aria-hidden="true" style={{ width: 40, height: 40, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", background: "#16a34a", color: "white", fontSize: 21, boxShadow: "0 6px 14px -7px rgba(21,128,61,0.9)" }}>
+                        ↗
+                      </div>
+                      <div>
+                        <div style={{ color: "#166534", fontSize: 9, fontWeight: 950, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 2 }}>
+                          Form insight
+                        </div>
+                        <div style={{ color: "#14532d", fontSize: 14, fontWeight: 850, lineHeight: 1.35, letterSpacing: "-0.01em" }}>
+                          {leaderboardInsight}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid var(--table-border)", borderRadius: 12 }}>
+                  <table style={{ width: "100%", minWidth: 620, borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
+                    <colgroup>
+                      <col style={{ width: 72 }} />
+                      <col style={{ width: 112 }} />
+                      <col />
+                      <col style={{ width: 82 }} />
+                      <col style={{ width: 120 }} />
+                    </colgroup>
+                    <thead style={{ position: "sticky", top: 0, zIndex: 1, background: "var(--card-bg)", boxShadow: "0 1px 0 var(--table-border)" }}>
+                      <tr>
+                        {["Rank", "Date", "Course & tee", "Score", "Diff."].map((heading) => (
+                          <th key={heading} style={{ padding: "10px 14px", textAlign: heading === "Course & tee" || heading === "Date" ? "left" : "right", color: "var(--text)", fontSize: 10, fontWeight: 850, letterSpacing: "0.08em", textTransform: "uppercase", whiteSpace: "nowrap" }}>
+                            {heading}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {allTimeRankedRounds.map(({ round, differential, rank }, index) => {
+                        const isLatest = round.id === latestRound?.id;
+                        const parts = courseParts(round);
+                        const courseName = parts.course || round.course || "Round";
+                        const courseDetail = [parts.tee, round.holes].filter(Boolean).join(" · ");
+                        return (
+                          <tr
+                            key={round.id ?? `${round.date}-${round.course}-${round.score}`}
+                            style={{
+                              background: isLatest
+                                ? "rgba(34,197,94,0.14)"
+                                : index % 2 === 1
+                                  ? "rgba(100,116,139,0.045)"
+                                  : "transparent",
+                              outline: isLatest ? "2px solid rgba(34,197,94,0.5)" : "none",
+                              outlineOffset: -2,
+                            }}
+                          >
+                            <td style={{ padding: "11px 14px", textAlign: "right", borderBottom: "1px solid var(--table-border)" }}>
+                              <span style={{ display: "inline-flex", minWidth: 32, height: 26, padding: "0 7px", alignItems: "center", justifyContent: "center", borderRadius: 8, background: rank <= 3 ? "#fef3c7" : "rgba(100,116,139,0.1)", color: rank <= 3 ? "#92400e" : isLatest ? "#15803d" : "var(--text-h)", fontWeight: 900 }}>
+                                {rank}
+                              </span>
+                            </td>
+                            <td style={{ padding: "11px 14px", borderBottom: "1px solid var(--table-border)", color: "var(--text)", fontWeight: 650, whiteSpace: "nowrap" }}>
+                              {shortDate(round.date)}
+                            </td>
+                            <td style={{ padding: "11px 14px", borderBottom: "1px solid var(--table-border)", color: "var(--text-h)" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                                <span style={{ fontWeight: isLatest ? 850 : 700 }}>{courseName}</span>
+                                {isLatest && (
+                                  <span style={{ borderRadius: 999, padding: "2px 6px", background: "#dcfce7", color: "#166534", fontSize: 9, fontWeight: 900, letterSpacing: "0.05em", textTransform: "uppercase" }}>
+                                    Latest
+                                  </span>
+                                )}
+                              </div>
+                              {courseDetail && <div style={{ marginTop: 3, color: "var(--text)", fontSize: 10 }}>{courseDetail}</div>}
+                            </td>
+                            <td style={{ padding: "11px 14px", textAlign: "right", borderBottom: "1px solid var(--table-border)", color: "var(--text-h)", fontSize: 14, fontWeight: 750, fontVariantNumeric: "tabular-nums" }}>
+                              {round.score ?? "—"}
+                            </td>
+                            <td style={{ padding: "11px 14px", textAlign: "right", borderBottom: "1px solid var(--table-border)", fontVariantNumeric: "tabular-nums" }}>
+                              <span style={{ display: "inline-block", minWidth: 52, borderRadius: 8, padding: "5px 8px", background: isLatest ? "#dcfce7" : "rgba(37,99,235,0.08)", color: isLatest ? "#15803d" : "#1d4ed8", fontSize: 16, fontWeight: 950 }}>
+                                {differential.toFixed(1)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
