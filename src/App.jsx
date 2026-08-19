@@ -21,6 +21,17 @@ function scoreDifferentialForRound(round) {
   return differential(round?.score, round?.rating, round?.slope, round?.pcc, isNineHoleRound(round));
 }
 
+function exceptionalDifferentialForRound(round) {
+  const unroundedDifferential = differential(
+    round?.score,
+    round?.rating,
+    round?.slope,
+    round?.pcc,
+    isNineHoleRound(round)
+  );
+  return unroundedDifferential ?? scoreDifferentialForRound(round);
+}
+
 const r1 = (v) => Math.round(v * 10) / 10;
 const golfIrelandSettingsKey = "golfIreland";
 const golfIrelandSyncEndpoint = import.meta.env.VITE_GOLF_IRELAND_SYNC_URL ?? "";
@@ -56,6 +67,26 @@ function exceptionalScoreReduction(scoreDiff, handicapIndex) {
   if (diff <= index - 10) return 2;
   if (diff <= index - 7) return 1;
   return 0;
+}
+
+function handicapWithEsr(diffs, exceptionalDiffs = [], handicapIndexAtPlay = null) {
+  if (diffs.length < 8) {
+    return { index: null, indexBeforeEsr: null, esrReduction: 0 };
+  }
+
+  const indexBeforeEsr = handicap(diffs);
+  const esrReduction = handicapIndexAtPlay === null
+    ? 0
+    : exceptionalDiffs.reduce(
+        (total, diff) => total + exceptionalScoreReduction(diff, handicapIndexAtPlay),
+        0
+      );
+
+  return {
+    index: r1(indexBeforeEsr - esrReduction),
+    indexBeforeEsr,
+    esrReduction,
+  };
 }
 
 function scoreForDifferential(diff, rating, slope, pcc = 0, isNineHoleRound = false) {
@@ -996,8 +1027,30 @@ export default function App() {
     const value = Number(latest?.value);
     return isNaN(value) ? null : value;
   }, [syncedHandicapHistory]);
-  const calculatedHcp = diffs.length >= 8 ? handicap(diffs) : null;
-  const hcp = calculatedHcp ?? apiHandicapIndex;
+  const todaysRounds = useMemo(() => rounds.filter((round) => round.date === todayISO()), [rounds]);
+  const hasRoundToday = todaysRounds.length > 0;
+  const fallbackIndexAtPlay = Number(latestRound?.handicapIndex);
+  const indexAtPlayToday = apiHandicapIndex ?? (!isNaN(fallbackIndexAtPlay) ? fallbackIndexAtPlay : null);
+  const todaysExceptionalDifferentials = useMemo(() =>
+    todaysRounds.map(exceptionalDifferentialForRound).filter((diff) => diff !== null),
+    [todaysRounds]
+  );
+  const currentHandicapCalculation = useMemo(() =>
+    handicapWithEsr(diffs, hasRoundToday ? todaysExceptionalDifferentials : [], indexAtPlayToday),
+    [diffs, hasRoundToday, todaysExceptionalDifferentials, indexAtPlayToday]
+  );
+  const calculatedHcp = currentHandicapCalculation.index;
+  // Golf Ireland revises the official index no later than the following day.
+  // If today's score is already synced, calculate its effect locally; otherwise
+  // the official synced index remains the source of truth.
+  const hcp = hasRoundToday ? calculatedHcp ?? apiHandicapIndex : apiHandicapIndex ?? calculatedHcp;
+  const rawCurrentHcp = diffs.length >= 8 ? handicap(diffs) : null;
+  // Existing ESR/official adjustments belong to the differentials already in
+  // the record. A future score starts without that adjustment, which lets the
+  // safeguard dilute only as affected scores leave or stop counting.
+  const existingDifferentialAdjustment = hcp !== null && rawCurrentHcp !== null
+    ? r1(hcp - rawCurrentHcp)
+    : 0;
   const cutLine = useMemo(() => {
     if (!hcp) return null;
     const sorted = [...clampedWithDiff].sort((a, b) => a.d - b.d).slice(0, 8);
@@ -1023,21 +1076,29 @@ export default function App() {
 
     const latestDate = new Date(`${latestRound.date}T00:00:00`);
     if (isNaN(latestDate.getTime())) return null;
+    const twoWeeksAgo = new Date(latestDate);
+    twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
     const twoMonthsAgo = new Date(latestDate);
     twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
 
     const leaderboardSize = Math.min(10, allTimeRankedRounds.length);
-    const recentBestCount = allTimeRankedRounds
-      .slice(0, leaderboardSize)
-      .filter(({ round }) => {
+    const bestRounds = allTimeRankedRounds.slice(0, leaderboardSize);
+    const countSince = (startDate) => bestRounds.filter(({ round }) => {
         const roundDate = new Date(`${round.date}T00:00:00`);
-        return !isNaN(roundDate.getTime()) && roundDate >= twoMonthsAgo && roundDate <= latestDate;
+        return !isNaN(roundDate.getTime()) && roundDate >= startDate && roundDate <= latestDate;
       }).length;
+    const lastTwoWeeksCount = countSince(twoWeeksAgo);
+    const recentBestCount = countSince(twoMonthsAgo);
+
+    const groupLabel = leaderboardSize === allTimeRankedRounds.length
+      ? `${leaderboardSize} ranked round${leaderboardSize === 1 ? "" : "s"}`
+      : `top ${leaderboardSize} rounds`;
+
+    if (lastTwoWeeksCount >= 2) {
+      return `${lastTwoWeeksCount} of your ${groupLabel} ${lastTwoWeeksCount === 1 ? "has" : "have"} come in the last two weeks. That's serious form — keep it going!`;
+    }
 
     if (recentBestCount > 0) {
-      const groupLabel = leaderboardSize === allTimeRankedRounds.length
-        ? `${leaderboardSize} ranked round${leaderboardSize === 1 ? "" : "s"}`
-        : `top ${leaderboardSize} rounds`;
       return `${recentBestCount} of your ${groupLabel} ${recentBestCount === 1 ? "has" : "have"} come in the last two months. Keep it going!`;
     }
 
@@ -1437,13 +1498,21 @@ export default function App() {
 
     const alternateScore = Number(lastRoundScenarioScore);
     const originalDiff = scoreDifferentialForRound(latestRound);
-    const alternateDiff = differential(
-      alternateScore,
-      latestRound.rating,
-      latestRound.slope,
-      latestRound.pcc,
-      isNineHoleRound(latestRound)
-    );
+    // When the score is unchanged, reuse Golf Ireland's synced differential so
+    // the current and what-if paths are exactly identical. Only hypothetical
+    // scores need a locally calculated differential.
+    const alternateDiff = alternateScore === Number(latestRound.score)
+      ? originalDiff
+      : differential(
+          alternateScore,
+          latestRound.rating,
+          latestRound.slope,
+          latestRound.pcc,
+          isNineHoleRound(latestRound)
+        );
+    const alternateExceptionalDiff = alternateScore === Number(latestRound.score)
+      ? exceptionalDifferentialForRound(latestRound)
+      : alternateDiff;
     const latestRoundInWindow = clampedWithDiff.some(({ id }) => id === latestRound.id);
 
     if (!latestRoundInWindow || originalDiff === null || alternateDiff === null || diffs.length < 8) {
@@ -1462,15 +1531,17 @@ export default function App() {
     }
 
     const scenarioDiffs = clampedWithDiff.map(({ id, d }) => id === latestRound.id ? alternateDiff : d);
-    const projectedHcpBeforeEsr = handicap(scenarioDiffs);
     const roundHandicapIndex = Number(latestRound.handicapIndex);
-    const handicapIndexAtPlay = !isNaN(roundHandicapIndex) ? roundHandicapIndex : hcp;
-    const esrReduction = handicapIndexAtPlay !== null
-      ? exceptionalScoreReduction(alternateDiff, handicapIndexAtPlay)
-      : 0;
-    const projectedHcp = projectedHcpBeforeEsr !== null
-      ? r1(projectedHcpBeforeEsr - esrReduction)
-      : null;
+    const handicapIndexAtPlay = latestRound.date === todayISO()
+      ? indexAtPlayToday
+      : !isNaN(roundHandicapIndex)
+        ? roundHandicapIndex
+        : hcp;
+    const scenarioExceptionalDiffs = latestRound.date === todayISO()
+      ? todaysRounds.map((round) => round.id === latestRound.id ? alternateExceptionalDiff : exceptionalDifferentialForRound(round)).filter((diff) => diff !== null)
+      : [alternateExceptionalDiff];
+    const scenarioCalculation = handicapWithEsr(scenarioDiffs, scenarioExceptionalDiffs, handicapIndexAtPlay);
+    const projectedHcp = scenarioCalculation.index;
     const change = hcp !== null && projectedHcp !== null ? r1(projectedHcp - hcp) : null;
     const originalCounts = countingIds.has(latestRound.id);
     const scenarioCountingIds = new Set(
@@ -1488,14 +1559,14 @@ export default function App() {
       originalDiff,
       alternateDiff,
       projectedHcp,
-      projectedHcpBeforeEsr,
+      projectedHcpBeforeEsr: scenarioCalculation.indexBeforeEsr,
       handicapIndexAtPlay,
-      esrReduction,
+      esrReduction: scenarioCalculation.esrReduction,
       change,
       originalCounts,
       alternateCounts: scenarioCountingIds.has(latestRound.id),
     };
-  }, [latestRound, lastRoundScenarioScore, clampedWithDiff, diffs.length, hcp, countingIds]);
+  }, [latestRound, lastRoundScenarioScore, clampedWithDiff, diffs.length, hcp, countingIds, indexAtPlayToday, todaysRounds]);
 
   const plannerRows = useMemo(() => {
     if (!planner.course || !planner.rating || !planner.slope) return [];
@@ -1508,7 +1579,10 @@ export default function App() {
       const safeScore = Math.max(1, score);
       const actualDiff = differential(safeScore, planner.rating, planner.slope, planner.pcc, plannerIsNineHole);
       const nextWithMarker = actualDiff !== null
-        ? clamp20([...diffs.map((d) => ({ d, isNew: false })), { d: actualDiff, isNew: true }])
+        ? clamp20([
+            ...diffs.map((d) => ({ d: d + existingDifferentialAdjustment, isNew: false })),
+            { d: actualDiff, isNew: true },
+          ])
         : [];
       const bestAfter = nextWithMarker.length >= 8
         ? [...nextWithMarker].sort((a, b) => a.d - b.d).slice(0, 8)
@@ -1572,7 +1646,7 @@ export default function App() {
     }
 
     return rows.sort((a, b) => a.score - b.score);
-  }, [reqDiff, planner, diffs, hcp]);
+  }, [reqDiff, planner, diffs, hcp, existingDifferentialAdjustment]);
 
   const courseTeeInputWidth = useMemo(() => {
     const labels = coursePresets.map(courseSelectLabel);
@@ -1703,9 +1777,15 @@ export default function App() {
             <StatCard
               label="Handicap Index"
               value={hcp ?? "—"}
-              sub={diffs.length < 8 ? `${diffs.length} of 8 rounds entered` : `${diffs.length} rounds`}
+              sub={hasRoundToday
+                ? `Includes today's round${currentHandicapCalculation.esrReduction ? ` · ESR -${currentHandicapCalculation.esrReduction.toFixed(1)}` : ""}`
+                : apiHandicapIndex !== null
+                  ? "Official Golf Ireland index"
+                  : diffs.length < 8
+                    ? `${diffs.length} of 8 rounds entered`
+                    : `${diffs.length} rounds`}
               accent
-              help="Calculated from the best 8 score differentials in your most recent 20 rounds once at least 8 rounds exist."
+              help="Uses the official Golf Ireland index until a round dated today is synced. Today's pending update is calculated from the best 8 of the latest 20, including any applicable ESR."
             />
             <StatCard
               label="Cut Line"
