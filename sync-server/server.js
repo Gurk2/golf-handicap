@@ -288,6 +288,34 @@ async function getDisplayName(page) {
   return "";
 }
 
+async function getCurrentHandicapIndex(page) {
+  const bodyText = await page.locator("body").innerText().catch(() => "");
+  const lines = bodyText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/®/g, "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  const validIndex = (value) => Number.isFinite(value) && value >= -10 && value <= 54;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/\blow\s+(?:handicap\s+)?index\b/i.test(line)) continue;
+    const labelMatch = line.match(/^(?:current\s+)?handicap\s+index\b\s*[:—-]?\s*(.*)$/i);
+    if (!labelMatch) continue;
+
+    const sameLineValue = labelMatch[1].match(/[+−-]?\d+(?:\.\d+)?/)?.[0]?.replace("−", "-");
+    if (sameLineValue !== undefined && validIndex(Number(sameLineValue))) return Number(sameLineValue);
+
+    for (let offset = 1; offset <= 3 && index + offset < lines.length; offset += 1) {
+      const candidate = lines[index + offset];
+      if (/\b(?:low\s+)?(?:handicap\s+)?index\b/i.test(candidate)) break;
+      const value = candidate.match(/^[+−-]?\d+(?:\.\d+)?$/)?.[0]?.replace("−", "-");
+      if (value !== undefined && validIndex(Number(value))) return Number(value);
+    }
+  }
+
+  return null;
+}
+
 app.get("/course-rating/search", async (req, res) => {
   const name = String(req.query.name ?? "").trim();
   const country = String(req.query.country ?? "NIR").trim();
@@ -367,11 +395,16 @@ app.post("/sync-golf-ireland", async (req, res) => {
     await page.goto(pageUrl, { waitUntil: "networkidle" });
 
     const displayName = await getDisplayName(page);
+    const handicapIndex = await getCurrentHandicapIndex(page);
     const payload = await getScoresFromBrowser(page, scoresUrl);
     const scores = extractScores(payload);
 
     res.json({
       scores,
+      handicap: handicapIndex === null ? undefined : {
+        index: handicapIndex,
+        source: "golfIrelandPage",
+      },
       profile: {
         displayName,
       },

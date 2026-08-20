@@ -1384,11 +1384,15 @@ export default function App() {
         .filter(Boolean);
       importedHandicapHistory.push(...handicapHistoryFromRounds(importedRounds));
 
-      const currentHandicap = payload.handicap ?? payload.handicapRecord?.handicap;
-      if (currentHandicap?.index !== undefined && currentHandicap?.index !== null) {
+      const currentHandicap = payload.handicap
+        ?? payload.raw?.handicap
+        ?? payload.handicapRecord?.handicap
+        ?? payload.raw?.handicapRecord?.handicap;
+      const currentHandicapIndex = Number(currentHandicap?.index);
+      if (currentHandicap?.index !== undefined && currentHandicap?.index !== null && !isNaN(currentHandicapIndex)) {
         importedHandicapHistory.push({
           date: todayISO(),
-          value: r1(Number(currentHandicap.index)),
+          value: r1(currentHandicapIndex),
           source: "golfIreland",
           displayIndex: currentHandicap.displayIndex,
         });
