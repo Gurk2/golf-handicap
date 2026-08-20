@@ -442,7 +442,7 @@ function handicapHistoryFromRounds(rounds) {
       return {
         date: round.date,
         value: r1(value),
-        source: "golfIreland",
+        source: "golfIrelandRound",
         displayIndex: round.handicapIndex,
       };
     })
@@ -1017,7 +1017,7 @@ export default function App() {
   const diffs = useMemo(() => clampedWithDiff.map(({ d }) => d), [clampedWithDiff]);
 
   const apiHandicapIndex = useMemo(() => {
-    const latest = syncedHandicapHistory[syncedHandicapHistory.length - 1];
+    const latest = [...syncedHandicapHistory].reverse().find((entry) => entry.source === "golfIrelandCurrent");
     const value = Number(latest?.value);
     return isNaN(value) ? null : value;
   }, [syncedHandicapHistory]);
@@ -1377,7 +1377,7 @@ export default function App() {
           return {
             date: normalizeDate(firstValue(entry, ["date", "effectiveDate", "revisionDate", "updatedOn"])),
             value: r1(value),
-            source: "golfIreland",
+            source: "golfIrelandHistory",
             displayIndex: entry.displayIndex,
           };
         })
@@ -1393,7 +1393,7 @@ export default function App() {
         importedHandicapHistory.push({
           date: todayISO(),
           value: r1(currentHandicapIndex),
-          source: "golfIreland",
+          source: "golfIrelandCurrent",
           displayIndex: currentHandicap.displayIndex,
         });
       }

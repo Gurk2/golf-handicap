@@ -288,18 +288,17 @@ async function getDisplayName(page) {
   return "";
 }
 
-async function getCurrentHandicapIndex(page) {
-  const bodyText = await page.locator("body").innerText().catch(() => "");
+function parseCurrentHandicapIndex(bodyText) {
   const lines = bodyText
     .split(/\r?\n/)
-    .map((line) => line.replace(/®/g, "").replace(/\s+/g, " ").trim())
+    .map((line) => line.replace(/[®™]/g, "").replace(/\s+/g, " ").trim())
     .filter(Boolean);
   const validIndex = (value) => Number.isFinite(value) && value >= -10 && value <= 54;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
     if (/\blow\s+(?:handicap\s+)?index\b/i.test(line)) continue;
-    const labelMatch = line.match(/^(?:current\s+)?handicap\s+index\b\s*[:—-]?\s*(.*)$/i);
+    const labelMatch = line.match(/^(?:your\s+)?(?:(?:current\s+)?handicap(?:\s+index)?|h\.?(?:andicap)?\s*i\.?(?:ndex)?)\b\s*[:—-]?\s*(.*)$/i);
     if (!labelMatch) continue;
 
     const sameLineValue = labelMatch[1].match(/[+−-]?\d+(?:\.\d+)?/)?.[0]?.replace("−", "-");
@@ -311,6 +310,46 @@ async function getCurrentHandicapIndex(page) {
       const value = candidate.match(/^[+−-]?\d+(?:\.\d+)?$/)?.[0]?.replace("−", "-");
       if (value !== undefined && validIndex(Number(value))) return Number(value);
     }
+  }
+
+  return null;
+}
+
+async function handicapIndexOnCurrentPage(page) {
+  for (const frame of page.frames()) {
+    const bodyText = await frame.locator("body").innerText().catch(() => "");
+    const index = parseCurrentHandicapIndex(bodyText);
+    if (index !== null) return index;
+  }
+  return null;
+}
+
+async function getCurrentHandicapIndex(page) {
+  const currentPageIndex = await handicapIndexOnCurrentPage(page);
+  if (currentPageIndex !== null) return currentPageIndex;
+
+  const overviewHref = await page.locator("a").evaluateAll((links) => {
+    const normalized = links.map((link) => ({
+      href: link.href,
+      text: link.textContent?.replace(/\s+/g, " ").trim() ?? "",
+    }));
+    return normalized.find((link) => /my\s+golf\s+overview/i.test(link.text))?.href
+      ?? normalized.find((link) => /\/(?:my-golf|my-golf-overview)\/?(?:[?#].*)?$/i.test(link.href))?.href
+      ?? null;
+  }).catch(() => null);
+
+  const origin = new URL(page.url()).origin;
+  const candidates = [
+    overviewHref,
+    `${origin}/my-golf`,
+    `${origin}/my-golf-overview`,
+  ].filter(Boolean);
+
+  for (const url of [...new Set(candidates)]) {
+    const response = await page.goto(url, { waitUntil: "networkidle" }).catch(() => null);
+    if (!response?.ok()) continue;
+    const index = await handicapIndexOnCurrentPage(page);
+    if (index !== null) return index;
   }
 
   return null;
@@ -395,9 +434,9 @@ app.post("/sync-golf-ireland", async (req, res) => {
     await page.goto(pageUrl, { waitUntil: "networkidle" });
 
     const displayName = await getDisplayName(page);
-    const handicapIndex = await getCurrentHandicapIndex(page);
     const payload = await getScoresFromBrowser(page, scoresUrl);
     const scores = extractScores(payload);
+    const handicapIndex = await getCurrentHandicapIndex(page);
 
     res.json({
       scores,
