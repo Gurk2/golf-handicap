@@ -6,13 +6,26 @@ function isNineHoleScore(score) {
   return Number(score) < 70;
 }
 
-function differential(score, rating, slope, pcc = 0, forceNineHole = null) {
+function estimatedExpectedNineHoleDifferential(handicapIndex) {
+  const index = Number(handicapIndex);
+  if (isNaN(index)) return null;
+
+  // WHS does not publish its expected-score lookup. This estimate is calibrated
+  // to the official USGA example (HI 14.0 -> 8.5 expected) and a Golf Ireland
+  // result (HI 12.2 -> approximately 7.48 expected).
+  return ((17 / 30) * index) + (17 / 30);
+}
+
+function differential(score, rating, slope, pcc = 0, forceNineHole = null, handicapIndex = null) {
   if (score === null || score === undefined || score === "") return null;
   const s = Number(score), r = Number(rating), sl = Number(slope), p = Number(pcc || 0);
   if (isNaN(s) || isNaN(r) || isNaN(sl)) return null;
-  // 9-hole differentials are doubled to produce an 18-hole equivalent (WHS)
-  const d = ((s - r - p) * 113) / sl;
-  return (forceNineHole ?? isNineHoleScore(s)) ? d * 2 : d;
+  const nineHoles = forceNineHole ?? isNineHoleScore(s);
+  const playedDifferential = ((s - r - (nineHoles ? 0.5 * p : p)) * 113) / sl;
+  if (!nineHoles) return playedDifferential;
+
+  const expectedDifferential = estimatedExpectedNineHoleDifferential(handicapIndex);
+  return expectedDifferential === null ? null : playedDifferential + expectedDifferential;
 }
 
 function scoreDifferentialForRound(round) {
@@ -23,7 +36,7 @@ function scoreDifferentialForRound(round) {
   // Golf Ireland's value includes its authoritative adjusted-score, PCC and
   // 9-hole processing. Local calculation is only for explicitly manual rounds.
   if (round?.source !== "manual") return null;
-  return differential(round.score, round.rating, round.slope, round.pcc, isNineHoleRound(round));
+  return differential(round.score, round.rating, round.slope, round.pcc, isNineHoleRound(round), round.handicapIndex);
 }
 
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -83,11 +96,15 @@ function handicapWithEsr(diffs, exceptionalDiffs = [], handicapIndexAtPlay = nul
   };
 }
 
-function scoreForDifferential(diff, rating, slope, pcc = 0, isNineHoleRound = false) {
+function scoreForDifferential(diff, rating, slope, pcc = 0, isNineHoleRound = false, handicapIndex = null) {
   const d = Number(diff), r = Number(rating), sl = Number(slope), p = Number(pcc || 0);
   if (isNaN(d) || isNaN(r) || isNaN(sl)) return null;
-  const courseDiff = isNineHoleRound ? d / 2 : d;
-  return (courseDiff * sl) / 113 + r + p;
+  const expectedDifferential = isNineHoleRound
+    ? estimatedExpectedNineHoleDifferential(handicapIndex)
+    : 0;
+  if (expectedDifferential === null) return null;
+  const playedDifferential = d - expectedDifferential;
+  return (playedDifferential * sl) / 113 + r + (isNineHoleRound ? 0.5 * p : p);
 }
 
 function courseTeeLabel(course) {
@@ -1084,16 +1101,39 @@ export default function App() {
     const lastTwoWeeksCount = countSince(twoWeeksAgo);
     const recentBestCount = countSince(twoMonthsAgo);
 
+    const rollingIndexThrough = (roundIndex) => {
+      if (roundIndex < 0) return null;
+      const windowDiffs = rounds
+        .slice(Math.max(0, roundIndex - 19), roundIndex + 1)
+        .map(scoreDifferentialForRound)
+        .filter((diff) => diff !== null);
+      return windowDiffs.length >= 8 ? handicap(windowDiffs) : null;
+    };
+    const recentRoundIndexes = rounds
+      .map((_, index) => index)
+      .slice(-4);
+    const recentReductionResults = recentRoundIndexes
+      .map((roundIndex) => {
+        const before = rollingIndexThrough(roundIndex - 1);
+        const after = rollingIndexThrough(roundIndex);
+        return before !== null && after !== null ? after < before - 0.05 : null;
+      })
+      .filter((result) => result !== null);
+    const recentReductionCount = recentReductionResults.filter(Boolean).length;
+    const handicapImpactInsight = recentReductionResults.length >= 2 && recentReductionCount >= 2
+      ? `${recentReductionCount} of your last ${recentReductionResults.length} rounds have reduced your handicap.`
+      : "";
+
     const groupLabel = leaderboardSize === allTimeRankedRounds.length
       ? `${leaderboardSize} ranked round${leaderboardSize === 1 ? "" : "s"}`
       : `top ${leaderboardSize} rounds`;
 
     if (lastTwoWeeksCount >= 2) {
-      return `${lastTwoWeeksCount} of your ${groupLabel} ${lastTwoWeeksCount === 1 ? "has" : "have"} come in the last two weeks. That's serious form — keep it going!`;
+      return `${lastTwoWeeksCount} of your top ${leaderboardSize} rounds have come in the last two weeks. ${handicapImpactInsight ? `${handicapImpactInsight} Keep it going!` : "That's serious form — keep it going!"}`;
     }
 
     if (recentBestCount > 0) {
-      return `${recentBestCount} of your ${groupLabel} ${recentBestCount === 1 ? "has" : "have"} come in the last two months. Keep it going!`;
+      return `${recentBestCount} of your ${groupLabel} ${recentBestCount === 1 ? "has" : "have"} come in the last two months. ${handicapImpactInsight ? `${handicapImpactInsight} ` : ""}Keep it going!`;
     }
 
     if (latestAllTimeRank) {
@@ -1101,7 +1141,7 @@ export default function App() {
     }
 
     return null;
-  }, [allTimeRankedRounds, latestAllTimeRank, latestRound]);
+  }, [allTimeRankedRounds, latestAllTimeRank, latestRound, rounds]);
   const nextRoundDrop = useMemo(() => {
     const recentRounds = clamp20(rounds);
     if (recentRounds.length < 20) return null;
@@ -1286,6 +1326,7 @@ export default function App() {
       rating,
       slope,
       pcc: Number(manualPlanner.pcc) || 0,
+      handicapIndex: hcp ?? undefined,
       source: "manual",
       sourceId: `manual-${manualRound.date}-${score}-${Date.now()}`,
     });
@@ -1496,6 +1537,12 @@ export default function App() {
 
     const alternateScore = Number(lastRoundScenarioScore);
     const originalDiff = scoreDifferentialForRound(latestRound);
+    const roundHandicapIndex = Number(latestRound.handicapIndex);
+    const handicapIndexAtPlay = latestRound.date === todayISO()
+      ? indexAtPlayToday
+      : !isNaN(roundHandicapIndex)
+        ? roundHandicapIndex
+        : hcp;
     // When the score is unchanged, reuse Golf Ireland's synced differential so
     // the current and what-if paths are exactly identical. Only hypothetical
     // scores need a locally calculated differential.
@@ -1507,7 +1554,8 @@ export default function App() {
           latestRound.rating,
           latestRound.slope,
           latestRound.pcc,
-          isNineHoleRound(latestRound)
+          isNineHoleRound(latestRound),
+          handicapIndexAtPlay
         );
     const latestRoundInWindow = clampedWithDiff.some(({ id }) => id === latestRound.id);
 
@@ -1527,12 +1575,6 @@ export default function App() {
     }
 
     const scenarioDiffs = clampedWithDiff.map(({ id, d }) => id === latestRound.id ? alternateDiff : d);
-    const roundHandicapIndex = Number(latestRound.handicapIndex);
-    const handicapIndexAtPlay = latestRound.date === todayISO()
-      ? indexAtPlayToday
-      : !isNaN(roundHandicapIndex)
-        ? roundHandicapIndex
-        : hcp;
     const scenarioExceptionalDiffs = latestRound.date === todayISO()
       ? todaysRounds.map((round) => round.id === latestRound.id ? alternateDiff : scoreDifferentialForRound(round)).filter((diff) => diff !== null)
       : [alternateDiff];
@@ -1593,12 +1635,12 @@ export default function App() {
     if (!planner.course || !planner.rating || !planner.slope) return [];
     if (reqDiff === null) return [];
     const plannerIsNineHole = isNineHoleCourse(planner);
-    const targetExact = scoreForDifferential(reqDiff, planner.rating, planner.slope, planner.pcc, plannerIsNineHole);
+    const targetExact = scoreForDifferential(reqDiff, planner.rating, planner.slope, planner.pcc, plannerIsNineHole, hcp);
     if (targetExact === null) return [];
 
     const projectScore = (score) => {
       const safeScore = Math.max(1, score);
-      const actualDiff = differential(safeScore, planner.rating, planner.slope, planner.pcc, plannerIsNineHole);
+      const actualDiff = differential(safeScore, planner.rating, planner.slope, planner.pcc, plannerIsNineHole, hcp);
       const nextWithMarker = actualDiff !== null
         ? clamp20([
             ...diffs.map((d) => ({ d: d + existingDifferentialAdjustment, isNew: false })),
@@ -1626,10 +1668,10 @@ export default function App() {
 
     const targetScore = Math.floor(targetExact);
     const esrOneScore = hcp !== null
-      ? Math.floor(scoreForDifferential(hcp - 7, planner.rating, planner.slope, planner.pcc, plannerIsNineHole) ?? NaN)
+      ? Math.floor(scoreForDifferential(hcp - 7, planner.rating, planner.slope, planner.pcc, plannerIsNineHole, hcp) ?? NaN)
       : null;
     const esrTwoScore = hcp !== null
-      ? Math.floor(scoreForDifferential(hcp - 10, planner.rating, planner.slope, planner.pcc, plannerIsNineHole) ?? NaN)
+      ? Math.floor(scoreForDifferential(hcp - 10, planner.rating, planner.slope, planner.pcc, plannerIsNineHole, hcp) ?? NaN)
       : null;
 
     const rows = [];
@@ -2322,6 +2364,11 @@ export default function App() {
                 <p style={{ fontSize: 12, color: "var(--text)", margin: "0 0 14px" }}>
                   {manualCourseLabel(latestRound) || courseTeeLabel(latestRound) || "Latest round"} on {shortDate(latestRound.date)}
                 </p>
+                {isNineHoleRound(latestRound) && Number(lastRoundScenarioScore) !== Number(latestRound.score) && (
+                  <p style={{ fontSize: 11, color: "var(--text)", margin: "-6px 0 14px" }}>
+                    This 9-hole what-if combines the played-nine differential with an estimated WHS expected-nine value. The unchanged score continues to use Golf Ireland’s official differential.
+                  </p>
+                )}
 
                 {lastRoundScenario?.canCalculate ? (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
@@ -2527,6 +2574,12 @@ export default function App() {
                     placeholder="Choose synced course"
                     onSelect={(preset) => setPlanner(preset)}
                   />
+                </div>
+              )}
+
+              {isNineHoleCourse(planner) && (
+                <div style={{ marginBottom: 12, border: "1px solid rgba(37,99,235,0.24)", borderRadius: 9, padding: "9px 11px", background: "rgba(37,99,235,0.07)", color: "var(--text)", fontSize: 11, lineHeight: 1.45 }}>
+                  9-hole projections use the WHS played-nine formula plus an estimated expected-nine differential based on your current index. Golf Ireland’s synced differential remains authoritative after the score is posted.
                 </div>
               )}
 

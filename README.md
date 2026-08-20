@@ -61,7 +61,7 @@ npm run preview
 3. Plan the next card.
    Use synced course/tee data to see which future scores would count, cut, or trigger ESR.
 
-9-hole handling comes from synced holes/course metadata or a score under `70`. Scores under `70` are assumed to be 9-hole rounds and are doubled to an 18-hole equivalent differential.
+9-hole handling comes from synced holes/course metadata or a score under `70`. Synced rounds always use Golf Ireland's official 18-hole equivalent differential. Manual and hypothetical 9-hole scores use the WHS played-nine formula plus an estimated expected-nine differential based on the Handicap Index at the time.
 
 ## WHS Model Notes
 
@@ -74,7 +74,7 @@ score differential = (score - course rating - PCC) * 113 / slope
 local planning index = average of the best 8 differentials from the most recent 20
 ```
 
-For synced rounds marked as 9 holes, or entered with a score under `70`, the app doubles the calculated differential when it needs a local differential. The target planner projects one additional round against the current rolling set of differentials, while the tracker uses official Golf Ireland handicap index values.
+For a manual or hypothetical 9-hole round, the played-nine component uses `(score - 9-hole course rating - 0.5 * PCC) * 113 / slope`, then adds an estimated expected-nine differential based on the player's Handicap Index. WHS does not publish its expected-score lookup, so local 9-hole projections are labelled as estimates. The estimate is calibrated to the official USGA example at Handicap Index 14.0 and the observed Golf Ireland result at 12.2. The target planner projects one additional round against the current rolling set of differentials, while synced rounds and the tracker use official Golf Ireland values.
 
 Course handicap uses:
 
