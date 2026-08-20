@@ -16,20 +16,14 @@ function differential(score, rating, slope, pcc = 0, forceNineHole = null) {
 }
 
 function scoreDifferentialForRound(round) {
-  const apiDifferential = Number(round?.scoreDifferential);
-  if (!isNaN(apiDifferential)) return apiDifferential;
-  return differential(round?.score, round?.rating, round?.slope, round?.pcc, isNineHoleRound(round));
-}
+  const officialDifferential = Number(round?.scoreDifferential);
+  if (!isNaN(officialDifferential)) return officialDifferential;
 
-function exceptionalDifferentialForRound(round) {
-  const unroundedDifferential = differential(
-    round?.score,
-    round?.rating,
-    round?.slope,
-    round?.pcc,
-    isNineHoleRound(round)
-  );
-  return unroundedDifferential ?? scoreDifferentialForRound(round);
+  // Never reconstruct a synced round's differential from its gross score.
+  // Golf Ireland's value includes its authoritative adjusted-score, PCC and
+  // 9-hole processing. Local calculation is only for explicitly manual rounds.
+  if (round?.source !== "manual") return null;
+  return differential(round.score, round.rating, round.slope, round.pcc, isNineHoleRound(round));
 }
 
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -1032,7 +1026,7 @@ export default function App() {
   const fallbackIndexAtPlay = Number(latestRound?.handicapIndex);
   const indexAtPlayToday = apiHandicapIndex ?? (!isNaN(fallbackIndexAtPlay) ? fallbackIndexAtPlay : null);
   const todaysExceptionalDifferentials = useMemo(() =>
-    todaysRounds.map(exceptionalDifferentialForRound).filter((diff) => diff !== null),
+    todaysRounds.map(scoreDifferentialForRound).filter((diff) => diff !== null),
     [todaysRounds]
   );
   const currentHandicapCalculation = useMemo(() =>
@@ -1501,7 +1495,8 @@ export default function App() {
     // When the score is unchanged, reuse Golf Ireland's synced differential so
     // the current and what-if paths are exactly identical. Only hypothetical
     // scores need a locally calculated differential.
-    const alternateDiff = alternateScore === Number(latestRound.score)
+    const scoreIsUnchanged = alternateScore === Number(latestRound.score);
+    const alternateDiff = scoreIsUnchanged
       ? originalDiff
       : differential(
           alternateScore,
@@ -1510,9 +1505,6 @@ export default function App() {
           latestRound.pcc,
           isNineHoleRound(latestRound)
         );
-    const alternateExceptionalDiff = alternateScore === Number(latestRound.score)
-      ? exceptionalDifferentialForRound(latestRound)
-      : alternateDiff;
     const latestRoundInWindow = clampedWithDiff.some(({ id }) => id === latestRound.id);
 
     if (!latestRoundInWindow || originalDiff === null || alternateDiff === null || diffs.length < 8) {
@@ -1538,9 +1530,34 @@ export default function App() {
         ? roundHandicapIndex
         : hcp;
     const scenarioExceptionalDiffs = latestRound.date === todayISO()
-      ? todaysRounds.map((round) => round.id === latestRound.id ? alternateExceptionalDiff : exceptionalDifferentialForRound(round)).filter((diff) => diff !== null)
-      : [alternateExceptionalDiff];
-    const scenarioCalculation = handicapWithEsr(scenarioDiffs, scenarioExceptionalDiffs, handicapIndexAtPlay);
+      ? todaysRounds.map((round) => round.id === latestRound.id ? alternateDiff : scoreDifferentialForRound(round)).filter((diff) => diff !== null)
+      : [alternateDiff];
+    let scenarioCalculation;
+    if (latestRound.date === todayISO()) {
+      scenarioCalculation = handicapWithEsr(scenarioDiffs, scenarioExceptionalDiffs, handicapIndexAtPlay);
+    } else if (scoreIsUnchanged && hcp !== null) {
+      // Once Golf Ireland has completed its overnight revision, its published
+      // index is authoritative. Re-entering the real score must reproduce it
+      // exactly and must not invent an ESR that Golf Ireland did not apply.
+      scenarioCalculation = { index: hcp, indexBeforeEsr: hcp, esrReduction: 0 };
+    } else {
+      // Anchor a historical hypothetical to the official current index, then
+      // apply only the change caused by replacing the latest differential.
+      // This preserves any PCC, caps or prior official adjustments already in
+      // Golf Ireland's published value.
+      const actualRawIndex = handicap(diffs);
+      const scenarioRawIndex = handicap(scenarioDiffs);
+      const officialBaseline = hcp ?? actualRawIndex;
+      const indexBeforeEsr = r1(officialBaseline + scenarioRawIndex - actualRawIndex);
+      const esrReduction = handicapIndexAtPlay !== null
+        ? exceptionalScoreReduction(alternateDiff, handicapIndexAtPlay)
+        : 0;
+      scenarioCalculation = {
+        index: r1(indexBeforeEsr - esrReduction),
+        indexBeforeEsr,
+        esrReduction,
+      };
+    }
     const projectedHcp = scenarioCalculation.index;
     const change = hcp !== null && projectedHcp !== null ? r1(projectedHcp - hcp) : null;
     const originalCounts = countingIds.has(latestRound.id);
@@ -1566,7 +1583,7 @@ export default function App() {
       originalCounts,
       alternateCounts: scenarioCountingIds.has(latestRound.id),
     };
-  }, [latestRound, lastRoundScenarioScore, clampedWithDiff, diffs.length, hcp, countingIds, indexAtPlayToday, todaysRounds]);
+  }, [latestRound, lastRoundScenarioScore, clampedWithDiff, diffs, hcp, countingIds, indexAtPlayToday, todaysRounds]);
 
   const plannerRows = useMemo(() => {
     if (!planner.course || !planner.rating || !planner.slope) return [];
