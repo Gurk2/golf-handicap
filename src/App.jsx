@@ -1154,6 +1154,78 @@ export default function App() {
     };
   }, [rounds, countingIds]);
 
+  const latestRoundCritique = useMemo(() => {
+    if (!latestRound || cutLine === null) return null;
+    const latestDifferential = scoreDifferentialForRound(latestRound);
+    if (latestDifferential === null) return null;
+
+    const counts = countingIds.has(latestRound.id);
+    const gapToCut = r1(Math.max(0, latestDifferential - cutLine));
+    const previousWindowDiffs = clamp20(rounds.slice(0, -1))
+      .map(scoreDifferentialForRound)
+      .filter((diff) => diff !== null);
+    const previousIndex = previousWindowDiffs.length >= 8 ? handicap(previousWindowDiffs) : null;
+    const currentRawIndex = diffs.length >= 8 ? handicap(diffs) : null;
+    const indexChange = previousIndex !== null && currentRawIndex !== null
+      ? r1(currentRawIndex - previousIndex)
+      : null;
+    const displacedRound = rounds.length > 20 ? rounds[rounds.length - 21] : null;
+    const displacedDifferential = scoreDifferentialForRound(displacedRound);
+    const improvementOnDisplaced = displacedDifferential !== null
+      ? r1(displacedDifferential - latestDifferential)
+      : null;
+    const sortedWindow = [...diffs].sort((a, b) => a - b);
+    const medianDifferential = sortedWindow.length
+      ? sortedWindow[Math.floor(sortedWindow.length / 2)]
+      : null;
+
+    if (counts) {
+      const impact = indexChange !== null && indexChange < 0
+        ? `It lowered your rolling best-eight average by ${Math.abs(indexChange).toFixed(1)}.`
+        : "It earned a place in your counting eight and is actively supporting your index.";
+      return {
+        tone: "strong",
+        eyebrow: "Counting round",
+        heading: "That card mattered",
+        message: `A ${latestDifferential.toFixed(1)} differential is inside your current top eight. ${impact}`,
+      };
+    }
+
+    if (gapToCut <= 1.5) {
+      const depthReason = improvementOnDisplaced !== null && improvementOnDisplaced > 0
+        ? `It was ${improvementOnDisplaced.toFixed(1)} better than the round it displaced from your latest 20.`
+        : "It remains close enough to become relevant as older counting scores move out of the window.";
+      const indexContext = indexChange !== null && indexChange > 0
+        ? `Your rolling index rose by ${indexChange.toFixed(1)} because an older counting differential aged out — not because this round counted.`
+        : "It did not pull the index down today, but it is not equivalent to giving the round away.";
+      return {
+        tone: "near",
+        eyebrow: "Just outside",
+        heading: "You banked a useful backstop",
+        message: `You missed the differential cut by only ${gapToCut.toFixed(1)}. ${indexContext} ${depthReason} While it stays in your latest 20, this ${latestDifferential.toFixed(1)} sets useful protection if better scores age out.`,
+      };
+    }
+
+    if (gapToCut <= 3 && medianDifferential !== null && latestDifferential <= medianDifferential) {
+      const indexContext = indexChange !== null && indexChange > 0
+        ? `The ${indexChange.toFixed(1)} rise came from the moving 20-score window, not from this round entering the best eight.`
+        : "It has no effect on today’s index, but it can still become relevant later.";
+      return {
+        tone: "steady",
+        eyebrow: "Solid backup card",
+        heading: "Not counting, but not meaningless",
+        message: `The ${latestDifferential.toFixed(1)} differential is ${gapToCut.toFixed(1)} outside the cut, but it is still in the stronger half of your current 20. ${indexContext} Think of it as a reserve score that limits the damage when older counting rounds disappear.`,
+      };
+    }
+
+    return {
+      tone: "honest",
+      eyebrow: "Round review",
+      heading: "Not your day — keep grinding",
+      message: `The ${latestDifferential.toFixed(1)} differential finished ${gapToCut.toFixed(1)} above the current cut. One to leave behind rather than overanalyse.`,
+    };
+  }, [latestRound, cutLine, countingIds, rounds, diffs]);
+
   const differentialHistory = useMemo(() =>
     rounds
       .map((round) => ({ date: round.date, value: scoreDifferentialForRound(round) }))
@@ -2329,10 +2401,56 @@ export default function App() {
             {latestRound && (
               <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
                 <div style={{ marginBottom: 16 }}>
-                  <SectionIntro title="Last Round What-If">
-                    Recalculate your current index as though the latest synced score had been different.
+                  <SectionIntro title="Latest Round Review & What-If">
+                    An honest read on the latest card, plus a score-by-score alternative.
                   </SectionIntro>
                 </div>
+                {latestRoundCritique && (
+                  <div style={{
+                    display: "grid",
+                    gridTemplateColumns: "42px 1fr",
+                    gap: 12,
+                    alignItems: "start",
+                    marginBottom: 16,
+                    border: `1px solid ${latestRoundCritique.tone === "strong" ? "rgba(22,163,74,0.38)" : latestRoundCritique.tone === "near" ? "rgba(37,99,235,0.32)" : latestRoundCritique.tone === "steady" ? "rgba(217,119,6,0.3)" : "var(--border)"}`,
+                    borderRadius: 13,
+                    padding: "17px 18px",
+                    background: latestRoundCritique.tone === "strong"
+                      ? "linear-gradient(135deg, rgba(220,252,231,0.8), rgba(240,253,244,0.38))"
+                      : latestRoundCritique.tone === "near"
+                        ? "linear-gradient(135deg, rgba(219,234,254,0.72), rgba(239,246,255,0.32))"
+                        : latestRoundCritique.tone === "steady"
+                          ? "linear-gradient(135deg, rgba(254,243,199,0.62), rgba(255,251,235,0.3))"
+                          : "rgba(100,116,139,0.08)",
+                    boxShadow: latestRoundCritique.tone === "honest" ? "none" : "0 12px 30px -24px rgba(15,23,42,0.7)",
+                  }}>
+                    <div aria-hidden="true" style={{
+                      width: 42,
+                      height: 42,
+                      borderRadius: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: latestRoundCritique.tone === "strong" ? "#16a34a" : latestRoundCritique.tone === "near" ? "#2563eb" : latestRoundCritique.tone === "steady" ? "#d97706" : "#64748b",
+                      color: "white",
+                      fontSize: 20,
+                      fontWeight: 900,
+                    }}>
+                      {latestRoundCritique.tone === "strong" ? "✓" : latestRoundCritique.tone === "near" ? "↗" : latestRoundCritique.tone === "steady" ? "≈" : "·"}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10, fontWeight: 900, letterSpacing: "0.11em", textTransform: "uppercase", color: latestRoundCritique.tone === "strong" ? "#166534" : latestRoundCritique.tone === "near" ? "#1d4ed8" : latestRoundCritique.tone === "steady" ? "#92400e" : "var(--text)", marginBottom: 5 }}>
+                        {latestRoundCritique.eyebrow}
+                      </div>
+                      <div style={{ color: latestRoundCritique.tone === "honest" ? "var(--text-h)" : "#0f172a", fontSize: 18, fontWeight: 850, lineHeight: 1.25, letterSpacing: "-0.015em" }}>
+                        {latestRoundCritique.heading}
+                      </div>
+                      <div style={{ color: latestRoundCritique.tone === "honest" ? "var(--text-h)" : "#334155", fontSize: 14, fontWeight: 550, lineHeight: 1.6, marginTop: 7, maxWidth: "86ch" }}>
+                        {latestRoundCritique.message}
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 }}>
                   <InputField
                     label="Actual score"
