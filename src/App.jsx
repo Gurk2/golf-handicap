@@ -192,11 +192,11 @@ function shortDate(value) {
   return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" });
 }
 
-function monthYear(value) {
+function fullDate(value) {
   if (!value) return "";
   const date = new Date(`${value}T00:00:00`);
   if (isNaN(date.getTime())) return value;
-  return date.toLocaleDateString("en-GB", { month: "short", year: "2-digit" });
+  return date.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
 function clamp20(arr) {
@@ -821,24 +821,20 @@ function RecentFormInsight({ insight }) {
 
       <div className="recent-form-stats">
         <div>
-          <span>Recent 5</span>
-          <strong>{insight.latestAverage.toFixed(1)}</strong>
+          <span>Best 4 of last 8</span>
+          <strong>{insight.recentBestFour.toFixed(1)}</strong>
         </div>
         <div>
-          <span>Previous 5</span>
-          <strong>{insight.previousAverage.toFixed(1)}</strong>
+          <span>Best 4 before</span>
+          <strong>{insight.previousBestFour.toFixed(1)}</strong>
         </div>
         <div>
-          <span>Earlier avg</span>
-          <strong>{insight.earlierAverage.toFixed(1)}</strong>
+          <span>Index-positive</span>
+          <strong>{insight.positiveCount}/{insight.positiveSampleSize}</strong>
         </div>
       </div>
 
-      {insight.previousBest && (
-        <p className="recent-form-context">
-          The previous best five-round run ended in {monthYear(insight.previousBest.endDate)} at {insight.previousBest.average.toFixed(1)}.
-        </p>
-      )}
+      <p className="recent-form-context">{insight.context}</p>
       <div className="recent-form-encouragement">{insight.encouragement}</div>
     </aside>
   );
@@ -982,6 +978,7 @@ export default function App() {
   const [manualRoundState, setManualRoundState] = useState({ status: "idle", message: "" });
   const [courseHandicapCourse, setCourseHandicapCourse] = useState({ course: "", rating: "", slope: 113, pcc: 0 });
   const [showExcludedRounds, setShowExcludedRounds] = useState(false);
+  const [roundHistorySort, setRoundHistorySort] = useState("date");
   const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "", displayName: "" });
   const [hasSavedGolfIrelandCredentials, setHasSavedGolfIrelandCredentials] = useState(false);
   const [showGolfIrelandCredentials, setShowGolfIrelandCredentials] = useState(true);
@@ -1072,7 +1069,20 @@ export default function App() {
     return new Set([...clampedWithDiff].sort((a, b) => a.d - b.d).slice(0, 8).map(({ id }) => id));
   }, [hcp, clampedWithDiff]);
 
-  const displayedRounds = [...rounds].reverse();
+  const displayedRounds = useMemo(() => {
+    const newestFirst = [...rounds].reverse();
+    const withRecency = newestFirst.map((round, recencyIndex) => ({ round, recencyIndex }));
+    if (roundHistorySort === "differential") {
+      return withRecency.sort((a, b) => {
+        const aDiff = scoreDifferentialForRound(a.round);
+        const bDiff = scoreDifferentialForRound(b.round);
+        if (aDiff === null) return 1;
+        if (bDiff === null) return -1;
+        return aDiff - bDiff || a.recencyIndex - b.recencyIndex;
+      });
+    }
+    return withRecency;
+  }, [rounds, roundHistorySort]);
   const allTimeRankedRounds = useMemo(() =>
     rounds
       .map((round) => ({ round, differential: scoreDifferentialForRound(round) }))
@@ -1082,66 +1092,6 @@ export default function App() {
     [rounds]
   );
   const latestAllTimeRank = allTimeRankedRounds.find(({ round }) => round.id === latestRound?.id) ?? null;
-  const leaderboardInsight = useMemo(() => {
-    if (allTimeRankedRounds.length === 0 || !latestRound?.date) return null;
-
-    const latestDate = new Date(`${latestRound.date}T00:00:00`);
-    if (isNaN(latestDate.getTime())) return null;
-    const twoWeeksAgo = new Date(latestDate);
-    twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14);
-    const twoMonthsAgo = new Date(latestDate);
-    twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2);
-
-    const leaderboardSize = Math.min(10, allTimeRankedRounds.length);
-    const bestRounds = allTimeRankedRounds.slice(0, leaderboardSize);
-    const countSince = (startDate) => bestRounds.filter(({ round }) => {
-        const roundDate = new Date(`${round.date}T00:00:00`);
-        return !isNaN(roundDate.getTime()) && roundDate >= startDate && roundDate <= latestDate;
-      }).length;
-    const lastTwoWeeksCount = countSince(twoWeeksAgo);
-    const recentBestCount = countSince(twoMonthsAgo);
-
-    const rollingIndexThrough = (roundIndex) => {
-      if (roundIndex < 0) return null;
-      const windowDiffs = rounds
-        .slice(Math.max(0, roundIndex - 19), roundIndex + 1)
-        .map(scoreDifferentialForRound)
-        .filter((diff) => diff !== null);
-      return windowDiffs.length >= 8 ? handicap(windowDiffs) : null;
-    };
-    const recentRoundIndexes = rounds
-      .map((_, index) => index)
-      .slice(-4);
-    const recentReductionResults = recentRoundIndexes
-      .map((roundIndex) => {
-        const before = rollingIndexThrough(roundIndex - 1);
-        const after = rollingIndexThrough(roundIndex);
-        return before !== null && after !== null ? after < before - 0.05 : null;
-      })
-      .filter((result) => result !== null);
-    const recentReductionCount = recentReductionResults.filter(Boolean).length;
-    const handicapImpactInsight = recentReductionResults.length >= 2 && recentReductionCount >= 2
-      ? `${recentReductionCount} of your last ${recentReductionResults.length} rounds have reduced your handicap.`
-      : "";
-
-    const groupLabel = leaderboardSize === allTimeRankedRounds.length
-      ? `${leaderboardSize} ranked round${leaderboardSize === 1 ? "" : "s"}`
-      : `top ${leaderboardSize} rounds`;
-
-    if (lastTwoWeeksCount >= 2) {
-      return `${lastTwoWeeksCount} of your top ${leaderboardSize} rounds have come in the last two weeks. ${handicapImpactInsight ? `${handicapImpactInsight} Keep it going!` : "That's serious form — keep it going!"}`;
-    }
-
-    if (recentBestCount > 0) {
-      return `${recentBestCount} of your ${groupLabel} ${recentBestCount === 1 ? "has" : "have"} come in the last two months. ${handicapImpactInsight ? `${handicapImpactInsight} ` : ""}Keep it going!`;
-    }
-
-    if (latestAllTimeRank) {
-      return `Your latest round sits at #${latestAllTimeRank.rank} all time. Every new card is another chance to climb.`;
-    }
-
-    return null;
-  }, [allTimeRankedRounds, latestAllTimeRank, latestRound, rounds]);
   const nextRoundDrop = useMemo(() => {
     const recentRounds = clamp20(rounds);
     if (recentRounds.length < 20) return null;
@@ -1233,62 +1183,77 @@ export default function App() {
     [rounds]
   );
   const recentFormInsight = useMemo(() => {
-    if (differentialHistory.length < 10) return null;
-    const average = (points) => points.reduce((sum, point) => sum + Number(point.value), 0) / points.length;
-    const latestFive = differentialHistory.slice(-5);
-    const previousFive = differentialHistory.slice(-10, -5);
-    const earlierRounds = differentialHistory.slice(0, -5);
-    const historicalWindows = [];
+    const currentTwenty = differentialHistory.slice(-20);
+    if (currentTwenty.length < 12) return null;
 
-    for (let endIndex = 4; endIndex <= differentialHistory.length - 6; endIndex += 1) {
-      const window = differentialHistory.slice(endIndex - 4, endIndex + 1);
-      historicalWindows.push({
-        average: average(window),
-        startDate: window[0].date,
-        endDate: window[4].date,
-      });
-    }
-
-    const latestAverage = average(latestFive);
-    const previousAverage = average(previousFive);
-    const earlierAverage = average(earlierRounds);
-    const previousBest = historicalWindows.reduce(
-      (best, window) => !best || window.average < best.average ? window : best,
-      null
-    );
-    const versusPrevious = r1(latestAverage - previousAverage);
-    const isRecord = previousBest && latestAverage < previousBest.average - 0.05;
-    const isLevelRecord = previousBest && Math.abs(latestAverage - previousBest.average) <= 0.05;
-    const improving = versusPrevious < -0.05;
-    const steady = Math.abs(versusPrevious) <= 0.05;
-
-    let heading = "Building a stronger run";
-    if (isRecord) heading = "Your best five-round run yet";
-    else if (isLevelRecord) heading = "Matching your best five-round run";
-    else if (improving) heading = "Moving in the right direction";
-    else if (steady) heading = "Holding steady";
-
-    let summary = `Your recent five-round average is ${latestAverage.toFixed(1)}, `;
-    if (improving) summary += `${Math.abs(versusPrevious).toFixed(1)} lower than the previous five.`;
-    else if (steady) summary += "level with the previous five.";
-    else summary += `${versusPrevious.toFixed(1)} higher than the previous five.`;
-
-    let encouragement = "Keep grinding — the next good card can turn the line.";
-    if (isRecord) encouragement = "That is real progress. Keep grinding!";
-    else if (isLevelRecord) encouragement = "You are right on your best pace. Keep it going!";
-    else if (improving) encouragement = "The work is showing. Keep grinding!";
-    else if (steady) encouragement = "A solid base — one strong card can move it lower.";
-
-    return {
-      heading,
-      summary,
-      encouragement,
-      latestAverage,
-      previousAverage,
-      earlierAverage,
-      previousBest,
+    const average = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+    const median = (values) => {
+      const sorted = [...values].sort((a, b) => a - b);
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
     };
-  }, [differentialHistory]);
+    const bestAverage = (points) => average(
+      points.map(({ value }) => Number(value)).sort((a, b) => a - b).slice(0, 4)
+    );
+
+    const recentEight = currentTwenty.slice(-8);
+    const precedingRounds = currentTwenty.slice(0, -8);
+    if (precedingRounds.length < 4) return null;
+    const recentBestFour = bestAverage(recentEight);
+    const previousBestFour = bestAverage(precedingRounds);
+    const bestFourChange = recentBestFour - previousBestFour;
+
+    const latestDate = new Date(`${currentTwenty[currentTwenty.length - 1].date}T00:00:00`);
+    const topGroupSize = Math.min(9, currentTwenty.length);
+    const topRounds = [...currentTwenty].sort((a, b) => Number(a.value) - Number(b.value)).slice(0, topGroupSize);
+    const sameMonth = (dateValue) => {
+      const date = new Date(`${dateValue}T00:00:00`);
+      return !isNaN(date.getTime()) && date.getMonth() === latestDate.getMonth() && date.getFullYear() === latestDate.getFullYear();
+    };
+    const recentTopCount = topRounds.filter(({ date }) => sameMonth(date)).length;
+    const monthLabel = latestDate.toLocaleDateString("en-GB", { month: "long" });
+
+    const rollingIndexThrough = (roundIndex) => {
+      if (roundIndex < 0) return null;
+      const windowDiffs = rounds.slice(Math.max(0, roundIndex - 19), roundIndex + 1)
+        .map(scoreDifferentialForRound).filter((diff) => diff !== null);
+      return windowDiffs.length >= 8 ? handicap(windowDiffs) : null;
+    };
+    const impactResults = rounds.slice(-4).map((_, offset) => {
+      const roundIndex = rounds.length - Math.min(4, rounds.length) + offset;
+      const before = rollingIndexThrough(roundIndex - 1);
+      const after = rollingIndexThrough(roundIndex);
+      return before !== null && after !== null ? after < before - 0.05 : null;
+    }).filter((result) => result !== null);
+    const positiveCount = impactResults.filter(Boolean).length;
+
+    const recentMedian = median(recentEight.map(({ value }) => Number(value)));
+    const previousMedian = median(precedingRounds.map(({ value }) => Number(value)));
+    const concentrated = recentTopCount >= Math.ceil(topGroupSize / 2);
+    const improving = bestFourChange < -0.25;
+    const steady = Math.abs(bestFourChange) <= 0.25;
+
+    let heading = "Good scores are still in the mix";
+    if (concentrated || improving) heading = "Your strongest form is recent";
+    else if (steady) heading = "Recent form is holding steady";
+
+    const summary = recentTopCount > 0
+      ? `${recentTopCount} of your best ${topGroupSize} rounds in the current 20 were played in ${monthLabel}.`
+      : `Your best four from the last eight average ${recentBestFour.toFixed(1)}.`;
+    const comparison = bestFourChange < -0.05
+      ? `${Math.abs(bestFourChange).toFixed(1)} better than the best four from the preceding ${precedingRounds.length}.`
+      : bestFourChange > 0.05
+        ? `${bestFourChange.toFixed(1)} higher than the best four from the preceding ${precedingRounds.length}.`
+        : `Level with the best four from the preceding ${precedingRounds.length}.`;
+    const context = `Your recent median is ${recentMedian.toFixed(1)} versus ${previousMedian.toFixed(1)} beforehand. ${comparison}`;
+    const encouragement = positiveCount >= 2
+      ? `${positiveCount} of your last ${impactResults.length} rounds reduced your calculated index. Keep it going!`
+      : improving || concentrated
+        ? "The quality is showing up more often — keep it going!"
+        : "One strong card can shift the picture quickly. Keep grinding!";
+
+    return { heading, summary, context, encouragement, recentBestFour, previousBestFour, positiveCount, positiveSampleSize: impactResults.length };
+  }, [differentialHistory, rounds]);
   const updateTarget = async (value) => {
     const nextTarget = value === "" ? "" : Number(value);
     setTarget(nextTarget);
@@ -2223,10 +2188,22 @@ export default function App() {
           {/* Rounds table */}
           {rounds.length > 0 && (
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
-              <div style={{ padding: "16px 20px 14px", borderBottom: "1px solid var(--border)" }}>
+              <div style={{ padding: "16px 20px 14px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
                 <h2 style={{ fontSize: 15, fontWeight: 700, color: "var(--text-h)", margin: 0, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                   Round History
                 </h2>
+                <label style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text)", fontSize: 12, fontWeight: 600 }}>
+                  Rank by
+                  <select
+                    aria-label="Rank round history by"
+                    value={roundHistorySort}
+                    onChange={(event) => setRoundHistorySort(event.target.value)}
+                    style={{ ...fieldControlStyle, width: "auto", minWidth: 150, height: 36, padding: "0 32px 0 10px" }}
+                  >
+                    <option value="date">Most recent date</option>
+                    <option value="differential">Best differential</option>
+                  </select>
+                </label>
               </div>
               <div style={{ overflowX: "auto" }}>
                 <table style={{ width: "max-content", minWidth: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -2261,17 +2238,17 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {displayedRounds.map((r, index) => {
+                    {displayedRounds.map(({ round: r, recencyIndex }) => {
                       const d = scoreDifferentialForRound(r);
                       const isCounting = countingIds.has(r.id);
-                      const isNewest = index === 0;
-                      const isExcluded = index >= 20;
+                      const isNewest = recencyIndex === 0;
+                      const isExcluded = recencyIndex >= 20;
                       const displayCourse = courseParts(r);
                       if (isExcluded && !showExcludedRounds) return null;
 
                       return (
                         <Fragment key={r.id}>
-                          {index === 20 && (
+                          {roundHistorySort === "date" && recencyIndex === 20 && (
                             <tr>
                               <td colSpan={9} style={{ padding: "9px 16px", background: "rgba(100,116,139,0.12)", color: "var(--text)", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", borderBottom: "1px solid var(--table-border)" }}>
                                 Excluded from handicap calculation - older than most recent 20 rounds
@@ -2280,7 +2257,7 @@ export default function App() {
                           )}
                         <tr key={r.id} style={{ background: isCounting && !isExcluded ? "var(--row-good)" : "transparent", borderBottom: "1px solid var(--table-border)", opacity: isExcluded ? 0.58 : 1 }}>
                           <td style={{ padding: "10px 16px", color: "var(--text-h)", whiteSpace: "nowrap" }}>
-                            {r.date || "—"}
+                            {fullDate(r.date) || "—"}
                           </td>
                           <td style={{ padding: "10px 16px", color: "var(--text-h)", fontWeight: 500, whiteSpace: "nowrap" }}>
                             {displayCourse.course || "—"}
@@ -2341,7 +2318,7 @@ export default function App() {
                             title="Show older rounds"
                           >
                             <span aria-hidden="true" style={{ fontSize: 13 }}>▸</span>
-                            Show {displayedRounds.length - 20} excluded rounds
+                            Show {Math.max(displayedRounds.length - 20, 0)} excluded rounds
                           </button>
                         </td>
                       </tr>
@@ -2550,32 +2527,6 @@ export default function App() {
                     <div style={{ display: "inline-flex", alignItems: "baseline", gap: 6, marginTop: 9, borderRadius: 999, padding: "5px 10px", background: "#dcfce7", color: "#166534", fontSize: 11, fontWeight: 800 }}>
                       Latest round: #{latestAllTimeRank.rank} of {allTimeRankedRounds.length}
                       <span style={{ opacity: 0.8 }}>· {latestAllTimeRank.differential.toFixed(1)}</span>
-                    </div>
-                  )}
-                  {leaderboardInsight && (
-                    <div style={{
-                      display: "grid",
-                      gridTemplateColumns: "40px 1fr",
-                      gap: 11,
-                      alignItems: "center",
-                      marginTop: 12,
-                      border: "1px solid rgba(22,163,74,0.42)",
-                      borderRadius: 13,
-                      padding: "12px 14px",
-                      background: "linear-gradient(135deg, rgba(220,252,231,0.98), rgba(187,247,208,0.68))",
-                      boxShadow: "0 10px 28px -18px rgba(21,128,61,0.9)",
-                    }}>
-                      <div aria-hidden="true" style={{ width: 40, height: 40, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", background: "#16a34a", color: "white", fontSize: 21, boxShadow: "0 6px 14px -7px rgba(21,128,61,0.9)" }}>
-                        ↗
-                      </div>
-                      <div>
-                        <div style={{ color: "#166534", fontSize: 9, fontWeight: 950, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 2 }}>
-                          Form insight
-                        </div>
-                        <div style={{ color: "#14532d", fontSize: 14, fontWeight: 850, lineHeight: 1.35, letterSpacing: "-0.01em" }}>
-                          {leaderboardInsight}
-                        </div>
-                      </div>
                     </div>
                   )}
                 </div>
