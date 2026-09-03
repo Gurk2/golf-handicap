@@ -10,10 +10,11 @@ function estimatedExpectedNineHoleDifferential(handicapIndex) {
   const index = Number(handicapIndex);
   if (isNaN(index)) return null;
 
-  // WHS does not publish its expected-score lookup. This estimate is calibrated
-  // to the official USGA example (HI 14.0 -> 8.5 expected) and a Golf Ireland
-  // result (HI 12.2 -> approximately 7.48 expected).
-  return ((17 / 30) * index) + (17 / 30);
+  // WHS does not publish its expected-score lookup. This estimate follows the
+  // relationship in the published USGA examples (HI 14.0 -> 8.5 expected and
+  // HI 15.0 -> 9.0 expected) and the observed Golf Ireland result at HI 12.0
+  // (approximately 7.5 expected).
+  return (index / 2) + 1.5;
 }
 
 function differential(score, rating, slope, pcc = 0, forceNineHole = null, handicapIndex = null) {

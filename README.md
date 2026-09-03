@@ -74,7 +74,7 @@ score differential = (score - course rating - PCC) * 113 / slope
 local planning index = average of the best 8 differentials from the most recent 20
 ```
 
-For a manual or hypothetical 9-hole round, the played-nine component uses `(score - 9-hole course rating - 0.5 * PCC) * 113 / slope`, then adds an estimated expected-nine differential based on the player's Handicap Index. WHS does not publish its expected-score lookup, so local 9-hole projections are labelled as estimates. The estimate is calibrated to the official USGA example at Handicap Index 14.0 and the observed Golf Ireland result at 12.2. The target planner projects one additional round against the current rolling set of differentials, while synced rounds and the tracker use official Golf Ireland values.
+For a manual or hypothetical 9-hole round, the played-nine component uses `(score - 9-hole course rating - 0.5 * PCC) * 113 / slope`, then adds an estimated expected-nine differential based on the player's Handicap Index. WHS does not publish its expected-score lookup, so local 9-hole projections are labelled as estimates. The estimate follows the relationship in the published USGA examples at Handicap Index 14.0 and 15.0, checked against an observed Golf Ireland result at 12.0. The target planner projects one additional round against the current rolling set of differentials, while synced rounds and the tracker use official Golf Ireland values.
 
 Course handicap uses:
 
