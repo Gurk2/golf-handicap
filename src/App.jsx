@@ -163,20 +163,6 @@ function isNineHoleRound(round) {
   return isNineHoleCourse(round) || isNineHoleScore(round?.score);
 }
 
-function coursePar(course) {
-  const par = Number(course?.par);
-  if (!isNaN(par) && par > 0) return par;
-  if (/\bknock\b/i.test(course?.course ?? "")) return isNineHoleCourse(course) ? 35 : 70;
-  return null;
-}
-
-function courseHandicapFor(index, course) {
-  const hi = Number(index), rating = Number(course?.rating), slope = Number(course?.slope), par = coursePar(course);
-  if (isNaN(hi) || isNaN(slope)) return null;
-  const ratingAdjustment = !isNaN(rating) && par !== null ? rating - par : 0;
-  return Math.round((hi * slope) / 113 + ratingAdjustment);
-}
-
 const neutralButtonStyle = {
   ...btnStyle("#f8fafc", "#0f172a"),
   border: "1px solid #cbd5e1",
@@ -600,9 +586,8 @@ function LineChart({ points }) {
   );
 }
 
-function DifferentialBarChart({ points }) {
+function DifferentialBarChart({ points, handicapPoints = [] }) {
   const [hoveredIndex, setHoveredIndex] = useState(null);
-  const [showBestAverage, setShowBestAverage] = useState(false);
   const visiblePoints = points.slice(-20);
 
   if (visiblePoints.length === 0) return (
@@ -614,48 +599,44 @@ function DifferentialBarChart({ points }) {
   const width = 760;
   const height = 240;
   const padX = 48;
-  const padRight = 24;
+  const padRight = 48;
   const padTop = 28;
   const padBottom = 54;
   const values = visiblePoints.map((point) => Number(point.value));
-  const allValues = points.map((point) => Number(point.value));
-  const rollingAverages = points
-    .map((_, i) => {
-      if (i < 4) return null;
-      return allValues.slice(i - 4, i + 1).reduce((sum, value) => sum + value, 0) / 5;
-    });
-  const trendValues = rollingAverages.filter((value) => value !== null);
-  const scaleValues = [...values, ...trendValues];
-  const chartMin = Math.min(0, Math.floor(Math.min(...scaleValues) - 1));
-  const chartMax = Math.max(1, Math.ceil(Math.max(...scaleValues) + 1));
+  const chartMin = Math.min(0, Math.floor(Math.min(...values) - 1));
+  const chartMax = Math.max(1, Math.ceil(Math.max(...values) + 1));
   const range = chartMax - chartMin || 1;
   const plotHeight = height - padTop - padBottom;
   const plotWidth = width - padX - padRight;
   const slotWidth = plotWidth / visiblePoints.length;
   const barWidth = Math.max(5, Math.min(24, slotWidth * 0.62));
-  const visibleStartIndex = points.length - visiblePoints.length;
   const xForVisibleIndex = (i) => padX + i * slotWidth + slotWidth / 2;
   const yForValue = (value) => padTop + (1 - (value - chartMin) / range) * plotHeight;
   const baseY = yForValue(0);
-  const rollingAveragePoints = points
-    .map((_, i) => {
-      const average = rollingAverages[i];
-      if (average === null || i < visibleStartIndex) return null;
-      return {
-        x: xForVisibleIndex(i - visibleStartIndex),
-        y: yForValue(average),
-        value: average,
-        startDate: points[i - 4].date,
-        endDate: points[i].date,
-      };
-    })
-    .filter(Boolean);
-  const rollingAveragePath = rollingAveragePoints.map((point) => `${point.x},${point.y}`).join(" ");
-  const bestRollingAveragePoint = rollingAveragePoints.reduce(
-    (best, point) => !best || point.value < best.value ? point : best,
-    null
-  );
   const tickValues = [chartMin, r1(chartMin + range / 2), chartMax];
+  const validHandicapPoints = handicapPoints
+    .map((point) => ({ ...point, value: Number(point.value) }))
+    .filter((point) => point.date && !isNaN(point.value))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const handicapTrendPoints = visiblePoints.map((point, i) => {
+    const applicable = validHandicapPoints.filter((historyPoint) => historyPoint.date <= point.date).at(-1);
+    return applicable ? { x: xForVisibleIndex(i), value: applicable.value, date: applicable.date } : null;
+  }).filter(Boolean);
+  const latestHandicapPoint = validHandicapPoints.at(-1);
+  if (handicapTrendPoints.length > 0 && latestHandicapPoint?.date >= visiblePoints.at(-1).date) {
+    handicapTrendPoints[handicapTrendPoints.length - 1] = {
+      x: xForVisibleIndex(visiblePoints.length - 1),
+      value: latestHandicapPoint.value,
+      date: latestHandicapPoint.date,
+    };
+  }
+  const handicapValues = handicapTrendPoints.map((point) => point.value);
+  const handicapMin = handicapValues.length ? Math.floor((Math.min(...handicapValues) - 0.3) * 2) / 2 : 0;
+  const handicapMax = handicapValues.length ? Math.ceil((Math.max(...handicapValues) + 0.3) * 2) / 2 : 1;
+  const handicapRange = handicapMax - handicapMin || 1;
+  const yForHandicap = (value) => padTop + (1 - (value - handicapMin) / handicapRange) * plotHeight;
+  const handicapPath = handicapTrendPoints.map((point) => `${point.x},${yForHandicap(point.value)}`).join(" ");
+  const handicapTicks = [handicapMin, r1(handicapMin + handicapRange / 2), handicapMax];
   const dateLabelIndexes = new Set(
     visiblePoints.length <= 5
       ? visiblePoints.map((_, i) => i)
@@ -665,13 +646,10 @@ function DifferentialBarChart({ points }) {
 
   return (
     <>
-      {rollingAveragePoints.length >= 2 && (
-        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 2, fontSize: 11, color: "var(--text)", fontWeight: 700 }}>
-          <span aria-hidden="true" style={{ display: "inline-block", width: 20, borderTop: "3px solid #1e3a8a" }} />
-          5-round average · includes prior scores
-        </div>
-      )}
-      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 220, display: "block" }} role="img" aria-label="Latest 20 score differentials with five-round rolling average across all rounds">
+      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap", marginBottom: 2, fontSize: 11, color: "var(--text)", fontWeight: 700 }}>
+        {handicapTrendPoints.length >= 2 && <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}><span aria-hidden="true" style={{ display: "inline-block", width: 20, borderTop: "3px solid #16a34a" }} />Handicap index (right scale)</span>}
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height: 220, display: "block" }} role="img" aria-label="Latest 20 score differentials with handicap index trend">
       {tickValues.map((tick) => {
         const y = yForValue(tick);
         return (
@@ -681,6 +659,14 @@ function DifferentialBarChart({ points }) {
               {tick.toFixed(1)}
             </text>
           </g>
+        );
+      })}
+      {handicapTrendPoints.length >= 2 && handicapTicks.map((tick) => {
+        const y = yForHandicap(tick);
+        return (
+          <text key={`handicap-tick-${tick}`} x={width - padRight + 9} y={y + 4} textAnchor="start" style={{ fill: "#15803d", fontSize: 11, fontWeight: 800 }}>
+            {tick.toFixed(1)}
+          </text>
         );
       })}
       {visiblePoints.map((point, i) => {
@@ -704,77 +690,12 @@ function DifferentialBarChart({ points }) {
           </g>
         );
       })}
-      {rollingAveragePoints.length >= 2 && (
+      {handicapTrendPoints.length >= 2 && (
         <>
-          <polyline
-            points={rollingAveragePath}
-            fill="none"
-            stroke="#1e3a8a"
-            strokeWidth="3"
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            pointerEvents="none"
-          />
-          {rollingAveragePoints.map((point, i) => (
-            <circle
-              key={`rolling-average-${i}`}
-              cx={point.x}
-              cy={point.y}
-              r="3"
-              fill="#1e3a8a"
-              stroke="var(--card-bg)"
-              strokeWidth="1.5"
-              pointerEvents="none"
-            />
+          <polyline points={handicapPath} fill="none" stroke="#16a34a" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" pointerEvents="none" />
+          {handicapTrendPoints.map((point, i) => (
+            <circle key={`handicap-trend-${point.date}-${i}`} cx={point.x} cy={yForHandicap(point.value)} r="3" fill="#16a34a" stroke="var(--card-bg)" strokeWidth="1.5" pointerEvents="none" />
           ))}
-          {bestRollingAveragePoint && (() => {
-            const point = bestRollingAveragePoint;
-            const diamondSize = 7;
-            const labelX = Math.min(width - padRight - 4, Math.max(padX + 4, point.x));
-            const labelY = point.y < padTop + 28 ? point.y + 25 : point.y - 14;
-            return (
-              <g
-                style={{ cursor: "help", outline: "none" }}
-                tabIndex={0}
-                onMouseEnter={() => setShowBestAverage(true)}
-                onMouseLeave={() => setShowBestAverage(false)}
-                onFocus={() => setShowBestAverage(true)}
-                onBlur={() => setShowBestAverage(false)}
-              >
-                <polygon
-                  points={`${point.x},${point.y - diamondSize} ${point.x + diamondSize},${point.y} ${point.x},${point.y + diamondSize} ${point.x - diamondSize},${point.y}`}
-                  fill="#f59e0b"
-                  stroke="var(--card-bg)"
-                  strokeWidth="2"
-                />
-                <text
-                  x={labelX}
-                  y={labelY}
-                  textAnchor={labelX === padX + 4 ? "start" : labelX === width - padRight - 4 ? "end" : "middle"}
-                  style={{ fill: "#b45309", fontSize: 11, fontWeight: 800 }}
-                >
-                  Best 5-round run · {point.value.toFixed(1)}
-                </text>
-              </g>
-            );
-          })()}
-          {showBestAverage && bestRollingAveragePoint && (() => {
-            const point = bestRollingAveragePoint;
-            const tooltipWidth = 142;
-            const tooltipX = Math.min(width - padRight - tooltipWidth, Math.max(padX, point.x - tooltipWidth / 2));
-            const tooltipY = point.y < padTop + 58 ? point.y + 13 : point.y - 57;
-            return (
-              <g pointerEvents="none">
-                <rect x={tooltipX} y={tooltipY} width={tooltipWidth} height="44" rx="7" fill="var(--card-bg)" stroke="#f59e0b" strokeWidth="1" />
-                <text x={tooltipX + 10} y={tooltipY + 17} style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
-                  {shortDate(point.startDate)} – {shortDate(point.endDate)}
-                </text>
-                <text x={tooltipX + 10} y={tooltipY + 34} style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
-                  5-round average {point.value.toFixed(1)}
-                </text>
-              </g>
-            );
-          })()}
         </>
       )}
       {visiblePoints.map((point, i) => dateLabelIndexes.has(i) && (
@@ -791,15 +712,17 @@ function DifferentialBarChart({ points }) {
       {hoveredPoint && (() => {
         const x = xForVisibleIndex(hoveredIndex);
         const tooltipX = Math.min(width - 132, Math.max(52, x - 58));
+        const handicapPoint = handicapTrendPoints.find((point) => point.x === x);
         return (
           <g pointerEvents="none">
-            <rect x={tooltipX} y={8} width="120" height="44" rx="7" fill="var(--card-bg)" stroke="#93c5fd" strokeWidth="1" />
+            <rect x={tooltipX} y={8} width="120" height={handicapPoint ? 61 : 44} rx="7" fill="var(--card-bg)" stroke="#93c5fd" strokeWidth="1" />
             <text x={tooltipX + 10} y={25} style={{ fill: "var(--text)", fontSize: 11, fontWeight: 700 }}>
               {shortDate(hoveredPoint.date)}
             </text>
             <text x={tooltipX + 10} y={42} style={{ fill: "var(--text-h)", fontSize: 13, fontWeight: 800 }}>
               Differential {Number(hoveredPoint.value).toFixed(1)}
             </text>
+            {handicapPoint && <text x={tooltipX + 10} y={57} style={{ fill: "#15803d", fontSize: 11, fontWeight: 800 }}>Index {handicapPoint.value.toFixed(1)}</text>}
           </g>
         );
       })()}
@@ -977,7 +900,6 @@ export default function App() {
   const [showManualRound, setShowManualRound] = useState(false);
   const [manualRound, setManualRound] = useState({ date: todayISO(), score: "" });
   const [manualRoundState, setManualRoundState] = useState({ status: "idle", message: "" });
-  const [courseHandicapCourse, setCourseHandicapCourse] = useState({ course: "", rating: "", slope: 113, pcc: 0 });
   const [showExcludedRounds, setShowExcludedRounds] = useState(false);
   const [roundHistorySort, setRoundHistorySort] = useState("date");
   const [golfIrelandSettings, setGolfIrelandSettings] = useState({ login: "", password: "", displayName: "" });
@@ -1035,6 +957,23 @@ export default function App() {
     const latest = [...syncedHandicapHistory].reverse().find((entry) => entry.source === "golfIrelandCurrent");
     const value = Number(latest?.value);
     return isNaN(value) ? null : value;
+  }, [syncedHandicapHistory]);
+  const indexLows = useMemo(() => {
+    const seasonYear = new Date().getFullYear();
+    const seasonStart = `${seasonYear}-04-01`;
+    const seasonEnd = `${seasonYear}-10-31`;
+    const validHistory = syncedHandicapHistory
+      .map((entry) => ({ ...entry, numericValue: Number(entry.value) }))
+      .filter((entry) => /^\d{4}-\d{2}-\d{2}$/.test(entry.date) && !isNaN(entry.numericValue));
+    const lowest = (entries) => entries.reduce(
+      (best, entry) => !best || entry.numericValue < best.numericValue ? entry : best,
+      null
+    );
+
+    return {
+      seasonYear,
+      season: lowest(validHistory.filter((entry) => entry.date >= seasonStart && entry.date <= seasonEnd)),
+    };
   }, [syncedHandicapHistory]);
   const todaysRounds = useMemo(() => rounds.filter((round) => round.date === todayISO()), [rounds]);
   const hasRoundToday = todaysRounds.length > 0;
@@ -1557,19 +1496,6 @@ export default function App() {
     });
   }, [rounds]);
 
-  const courseHandicapCourseSeeded = useRef(false);
-  useEffect(() => {
-    if (courseHandicapCourseSeeded.current || coursePresets.length === 0) return;
-    courseHandicapCourseSeeded.current = true;
-    const knockWhite = coursePresets.find((preset) => {
-      const label = courseTeeLabel(preset).toLowerCase();
-      return label.includes("knock") && label.includes("white");
-    });
-    setCourseHandicapCourse(knockWhite ?? coursePresets[0]);
-  }, [coursePresets]);
-
-  const courseHandicap = hcp ? courseHandicapFor(hcp, courseHandicapCourse) : null;
-
   const lastRoundScenario = useMemo(() => {
     if (!latestRound) return null;
 
@@ -1874,7 +1800,7 @@ export default function App() {
           </div>
 
           {/* Stat cards */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
             <StatCard
               label="Handicap Index"
               value={hcp ?? "—"}
@@ -1894,47 +1820,12 @@ export default function App() {
               sub="Best 8 differential threshold"
               help="The highest differential currently counting. A new differential below this usually improves the index."
             />
-            <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)", borderRadius: 16, padding: "20px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text)" }}>
-                <LabelWithHelp help="Your playing number for the selected course/tee, using index, slope, rating and par when available.">
-                  Course Handicap
-                </LabelWithHelp>
-              </span>
-              <span style={{ fontSize: 36, fontWeight: 700, lineHeight: 1.1, color: "var(--text-h)" }}>
-                {courseHandicap ?? "—"}
-              </span>
-              <CoursePresetSelect presets={coursePresets} selectedCourse={courseHandicapCourse} placeholder="Choose course" onSelect={(preset) => setCourseHandicapCourse(preset)} />
-              <span style={{ fontSize: 12, color: "var(--text)" }}>
-                {courseHandicap ? `Based on ${courseTeeLabel(courseHandicapCourse)} / slope ${courseHandicapCourse.slope}${coursePar(courseHandicapCourse) ? ` / par ${coursePar(courseHandicapCourse)}` : ""}` : "Enter more rounds"}
-              </span>
-            </div>
-            <div style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)", borderRadius: 16, padding: "20px 22px", display: "flex", flexDirection: "column", gap: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--text)" }}>
-                <LabelWithHelp help="The handicap index you want to plan towards. This value is saved in this browser.">
-                  Target Index
-                </LabelWithHelp>
-              </span>
-              <input
-                type="number"
-                step="0.1"
-                value={target}
-                onChange={(e) => updateTarget(e.target.value)}
-                style={{
-                  width: "100%",
-                  background: "var(--input-bg)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 8,
-                  padding: "5px 10px",
-                  fontSize: 32,
-                  fontWeight: 700,
-                  lineHeight: 1.1,
-                  color: "var(--text-h)",
-                  outline: "none",
-                }}
-                onFocus={(e) => { e.target.style.borderColor = "#22c55e"; e.target.style.boxShadow = "0 0 0 3px rgba(34,197,94,0.15)"; }}
-                onBlur={(e) => { e.target.style.borderColor = "var(--border)"; e.target.style.boxShadow = "none"; }}
-              />
-            </div>
+            <StatCard
+              label={`${indexLows.seasonYear} Season Low`}
+              value={indexLows.season ? indexLows.season.numericValue.toFixed(1) : "—"}
+              sub={indexLows.season ? `Reached ${fullDate(indexLows.season.date)}` : "No index recorded from 1 Apr to 31 Oct"}
+              help={`Your lowest recorded Golf Ireland handicap index between 1 April and 31 October ${indexLows.seasonYear}.`}
+            />
           </div>
 
           {/* Golf Ireland sync */}
@@ -2348,12 +2239,12 @@ export default function App() {
             <div className="rounded-xl p-5" style={{ background: "var(--card-bg)", border: "1px solid var(--border)", boxShadow: "var(--shadow)" }}>
               <div style={{ marginBottom: 8 }}>
                 <SectionIntro title="Score Differentials">
-                  Bars and dates show your latest 20 rounds. The trend calculation also uses prior, excluded scores.
+                  Bars show your latest 20 differentials. The green line tracks your handicap index on its own right-hand scale.
                 </SectionIntro>
               </div>
               <div className="differential-insight-layout">
                 <div style={{ minWidth: 0 }}>
-                  <DifferentialBarChart points={differentialHistory} />
+                  <DifferentialBarChart points={differentialHistory} handicapPoints={syncedHandicapHistory} />
                   {differentialHistory.length > 0 && (
                     <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 11, color: "var(--text)" }}>
                       <span>Latest: {Number(differentialHistory[differentialHistory.length - 1].value).toFixed(1)}</span>
@@ -2885,7 +2776,8 @@ export default function App() {
 
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 10, marginBottom: 10 }}>
                 <InputField
-                  label="Target handicap"
+                  label="Target differential"
+                  help="The score differential you want the planned round to produce. This is not a target handicap index."
                   type="number"
                   step="0.1"
                   value={target}
